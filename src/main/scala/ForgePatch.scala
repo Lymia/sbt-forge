@@ -15,12 +15,13 @@ import com.nothome.delta.GDiffPatcher
 object ForgePatch {
   case class PatchData(name: String,
                        untransformedName: String, transformedName: String, 
-                       inputChecksum: Option[Int], patchData: Array[Byte]) {
+                       inputChecksum: Option[Int], patchData: Array[Byte],
+                       modifiedTime: Long) {
     lazy val patchName = name+" ("+untransformedName+" -> "+transformedName+")"
   }
   type PatchSet = Map[String, PatchData]
 
-  def readPatchData(rin: InputStream) = {
+  def readPatchData(rin: InputStream, mt: Long) = {
     def in = new DataInputStream(rin)
     PatchData(in.readUTF(), in.readUTF(), in.readUTF(), 
               if(in.readBoolean()) Some(in.readInt()) else None,
@@ -28,14 +29,14 @@ object ForgePatch {
                 val buffer = new Array[Byte](in.readInt())
                 in.readFully(buffer)
                 buffer
-              })
+              }, mt)
   }
   def readPatchSetFromJar(in: JarInputStream, section: String) = {
     val patchSet = new collection.mutable.HashMap[String, PatchData]
     var entry: JarEntry = null
     while({entry = in.getNextJarEntry; entry != null}) {
       if(entry.getName.matches("binpatch/"+section+"/.*\\.binpatch")) {
-        val patch = readPatchData(in)
+        val patch = readPatchData(in, entry.getTime)
         patchSet.put(patch.untransformedName.replace(".", "/")+".class", patch)
       }
     }
@@ -60,9 +61,14 @@ object ForgePatch {
     val jarOut = new ZipOutputStream(new FileOutputStream(targetFile))
     val patcher = new GDiffPatcher
     for(entry <- jarIn.entries()) {
-      jarOut.putNextEntry(entry)
       patchSet.get(entry.getName) match {
         case Some(patch) =>
+          log.debug("Applying patch "+patch.patchName)
+
+          val newEntry = new ZipEntry(entry.getName)
+          newEntry.setTime(patch.modifiedTime)
+          jarOut.putNextEntry(newEntry)
+
           val data = IO.readBytes(jarIn.getInputStream(entry))
           patch.inputChecksum match {
             case None =>
@@ -76,8 +82,11 @@ object ForgePatch {
           }
           jarOut.write(patcher.patch(data, patch.patchData))
         case None =>
+          jarOut.putNextEntry(entry)
           IO.transfer(jarIn.getInputStream(entry), jarOut)
       }
     }
+    jarIn.close()
+    jarOut.close()
   }
 }
