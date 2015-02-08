@@ -1,4 +1,4 @@
-package moe.lymia.sbt
+package moe.lymia.sbt.forge
 
 import sbt._
 import scala.collection.JavaConversions._
@@ -12,7 +12,7 @@ import lzma.streams.LzmaInputStream
 
 import com.nothome.delta.GDiffPatcher
 
-object ForgePatch {
+object BinPatch {
   case class PatchData(name: String,
                        untransformedName: String, transformedName: String, 
                        inputChecksum: Option[Int], patchData: Array[Byte],

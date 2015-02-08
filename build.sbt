@@ -14,10 +14,6 @@ pomIncludeRepository := { x => false }
 
 scalaVersion := "2.10.4"
 
-libraryDependencies += "com.github.scopt" %% "scopt" % "3.3.0"
-
-libraryDependencies += "org.scalaz" %% "scalaz-core" % "7.1.0"
-
 libraryDependencies += "org.ow2.asm" % "asm-debug-all" % "5.0.3"
 
 libraryDependencies += "com.github.jponge" % "lzma-java" % "1.2"

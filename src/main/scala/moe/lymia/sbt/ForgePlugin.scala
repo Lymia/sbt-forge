@@ -9,6 +9,7 @@ import java.net.URL
 import java.io.File
 
 import language._
+import forge._
 
 object ForgePlugin extends Plugin {
   object forge { 
@@ -88,8 +89,8 @@ object ForgePlugin extends Plugin {
           val log = streams.log
           val outputFile = dir / (outputName+"-"+ver+".jar")
           if(!outputFile.exists) {
-            val patchSet = ForgePatch.readPatchSet(patchDataFile, patchSection)
-            ForgePatch.patchJar(in, outputFile, patchSet, log)
+            val patchSet = BinPatch.readPatchSet(patchDataFile, patchSection)
+            BinPatch.patchJar(in, outputFile, patchSet, log)
           }
           outputFile
         }
@@ -125,13 +126,7 @@ object ForgePlugin extends Plugin {
         val log = streams.log
         val outFile = dir / ("minecraft_merged-"+ver+".jar")
         if(!outFile.exists) {
-          val clientZip = asmstuff.Util.openZip(client.toPath)
-          val serverZip = asmstuff.Util.openZip(server.toPath)
-          val outZip = asmstuff.Util.openZip(outFile.toPath, true)
-          asmstuff.Merger.mergeJars(clientZip.getPath("/"), serverZip.getPath("/"), outZip.getPath("/"))
-          clientZip.close()
-          serverZip.close()
-          outZip.close()
+          sys.error("not yet implemented")
         }
         outFile
       },
