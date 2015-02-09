@@ -126,10 +126,10 @@ object ForgePlugin extends Plugin {
     forge.mergeJars              <<= (forge.cacheDir, forge.patchClientJar, forge.patchServerJar, forge.downloadUniversalJar, forge.fullVersion, streams) map 
       { (dir, client, server, universal, ver, streams) =>
         val log = streams.log
-        val outFile = dir / ("minecraft_merged-"+ver+".jar")
+        val outFile = dir / ("forgeBin_merged-"+ver+".jar")
         if(!outFile.exists) {
           log.info("Merging client, server, and Forge universal binaries to "+outFile.getCanonicalPath)
-          writeJarFile(merge(
+          writeJarFile(Merger.merge(
             loadJarFile(new FileInputStream(client)), loadJarFile(new FileInputStream(server)),
             loadJarFile(new FileInputStream(universal)), log
           ), new FileOutputStream(outFile))

@@ -20,6 +20,8 @@ libraryDependencies += "com.github.jponge" % "lzma-java" % "1.2"
 
 libraryDependencies += "com.nothome" % "javaxdelta" % "2.0.1"
 
+scalacOptions ++= Seq("-Xlint", "-feature")
+
 pomExtra := (
   <url>https://github.com/Lymia/sbt-forge</url>
   <licenses>

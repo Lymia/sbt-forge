@@ -5,23 +5,91 @@ import sbt._
 import java.io._
 import java.util.zip._
 import java.util.jar._
-import java.util.Arrays
 
 import org.objectweb.asm._
 import org.objectweb.asm.Opcodes._
 import org.objectweb.asm.tree._
 
 import scala.collection.JavaConversions._
-import scala.collection.mutable.{HashMap, ArrayBuffer, HashSet}
+import scala.collection.mutable.{HashMap, ArrayBuffer}
+
+import language._
 
 object asm {
-  case class JarData(resources: HashMap[String, Array[Byte]] = new HashMap[String, Array[Byte]],
-                     classes  : HashMap[String, ClassNode]   = new HashMap[String, ClassNode]) {
-    def syncClassNames = JarData(resources.clone, {
-      val classes = new HashMap[String, ClassNode]
+  case class MethodName(name: String, desc: String)
+  case class FieldName (name: String, desc: String)
+  private class MapWrapperSeq[A, B](map: collection.mutable.Map[A, B]) extends Seq[B] {
+    def iterator = map.iterator.map(_._2)
+    def apply(i: Int) = iterator.drop(i).next
+    def length = map.size
+  }
+  trait AnnotationContainer {
+    def visibleAnnotations  : collection.mutable.Buffer[AnnotationNode]
+    def invisibleAnnotations: collection.mutable.Buffer[AnnotationNode]
+  }
+  implicit class RichMethodNode(mn: MethodNode) extends AnnotationContainer {
+    def methodName = MethodName(mn.name, mn.desc)
+
+    def visibleAnnotations = {
+      if(mn.visibleAnnotations == null) mn.visibleAnnotations = new ArrayBuffer[AnnotationNode]
+      mn.visibleAnnotations
+    }
+    def invisibleAnnotations = {
+      if(mn.invisibleAnnotations == null) mn.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
+      mn.invisibleAnnotations
+    }
+  }
+  implicit class RichFieldNode(fn: FieldNode) extends AnnotationContainer {
+    def fieldName = FieldName(fn.name, fn.desc)
+
+    def visibleAnnotations = {
+      if(fn.visibleAnnotations == null) fn.visibleAnnotations = new ArrayBuffer[AnnotationNode]
+      fn.visibleAnnotations
+    }
+    def invisibleAnnotations = {
+      if(fn.invisibleAnnotations == null) fn.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
+      fn.invisibleAnnotations
+    }
+  }
+  class ClassNodeWrapper(private var inNode: ClassNode = null,
+                         noCopy: Boolean = false) extends AnnotationContainer {
+    val classNode = if(noCopy && inNode != null) inNode else {
+      val cn = new ClassNode()
+      if(inNode != null) inNode.accept(cn)
+      cn
+    }
+    inNode = null // remove reference so we don't cause big leaks
+
+    // XXX: This might turn out to be unsafe?
+    // TreeMap would be a little safer since ordering is a lot more guaranteed with those.
+    // ... but scala.collection.mutable.TreeMap does not exist.
+    val methodMap = new HashMap[MethodName, MethodNode]
+    def addMethod(n: MethodNode) = methodMap.put(n.methodName, n)
+    for(node <- classNode.methods) addMethod(node)
+    classNode.methods = new MapWrapperSeq(methodMap)
+
+    val fieldMap  = new HashMap[FieldName, FieldNode]
+    def addField(n: FieldNode) = fieldMap.put(n.fieldName, n)
+    for(node <- classNode.fields) addField(node)
+    classNode.fields = new MapWrapperSeq(fieldMap)
+
+    if(classNode.visibleAnnotations == null) classNode.visibleAnnotations = new ArrayBuffer[AnnotationNode]
+    if(classNode.invisibleAnnotations == null) classNode.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
+
+    def visibleAnnotations   = classNode.visibleAnnotations
+    def invisibleAnnotations = classNode.invisibleAnnotations
+
+    override def clone() = new ClassNodeWrapper(classNode)
+  }
+  implicit def classNodeWrapper2ClassNode(wrapper: ClassNodeWrapper) = wrapper.classNode
+
+  class JarData(val resources: HashMap[String, Array[Byte]]      = new HashMap[String, Array[Byte]],
+                val classes  : HashMap[String, ClassNodeWrapper] = new HashMap[String, ClassNodeWrapper]) {
+    def syncClassNames = new JarData(resources.clone, {
+      val classes = new HashMap[String, ClassNodeWrapper]
       for((_, cn) <- this.classes) 
         if(classes.contains(cn.name)) sys.error("Repeat class name: "+cn.name)
-        else classes.put(cn.name, cn)
+        else classes.put(cn.name, new ClassNodeWrapper(cn))
       classes
     })
   }
@@ -35,13 +103,13 @@ object asm {
         val cn = new ClassNode()
         cr.accept(cn, 0)
         if(jarData.classes.contains(cn.name)) sys.error("Repeat class name: "+cn.name)
-        jarData.classes.put(cn.name, cn)
+        jarData.classes.put(cn.name, new ClassNodeWrapper(cn, noCopy = true))
       } else jarData.resources.put(entry.getName, IO.readBytes(jin))
     }
     jarData
   }
-  def writeJarFile(data: JarData, out: OutputStream) = {
-    val written = new HashSet[String]
+  def writeJarFile(idata: JarData, out: OutputStream) = {
+    val data = idata.syncClassNames
     val jout = new JarOutputStream(out)
     for((name, data) <- data.resources) {
       jout.putNextEntry(new JarEntry(name))
@@ -54,93 +122,5 @@ object asm {
       jout.write(cw.toByteArray)
     }
     jout.close()
-  }
-
-  private def clone(cn: ClassNode) = {
-    val n = new ClassNode()
-    cn.accept(n)
-    n
-  }
-
-  private def markSideOnly(o: java.util.List[AnnotationNode], side: String) = 
-    if(!o.exists(_.desc == "Lcpw/mods/fml/relauncher/SideOnly;")){
-      val an = new AnnotationNode("Lcpw/mods/fml/relauncher/SideOnly;")
-      an.visitEnum("value", "Lcpw/mods/fml/relauncher/Side;", side)
-      o += an
-    }
-  private def markSideOnly(o: ClassNode, side: String) {
-    if(o.visibleAnnotations == null) o.visibleAnnotations = new ArrayBuffer[AnnotationNode]
-    markSideOnly(o.visibleAnnotations, side)
-  }
-  private def markSideOnly(o: MethodNode, side: String) {
-    if(o.visibleAnnotations == null) o.visibleAnnotations = new ArrayBuffer[AnnotationNode]
-    markSideOnly(o.visibleAnnotations, side)
-  }
-  private def markSideOnly(o: FieldNode, side: String) {
-    if(o.visibleAnnotations == null) o.visibleAnnotations = new ArrayBuffer[AnnotationNode]
-    markSideOnly(o.visibleAnnotations, side)
-  }
-
-  def buildMethodMap(f: java.util.List[MethodNode]): Map[(String, String), MethodNode] =
-    if(f == null) Map()
-    else f.map(x => (x.name, x.desc) -> x).toMap
-  def buildFieldMap(f: java.util.List[FieldNode]): Map[(String, String), FieldNode] =
-    if(f == null) Map()
-    else f.map(x => (x.name, x.desc) -> x).toMap
-
-  def merge(client: JarData, server: JarData, forge: JarData, log: Logger) = {
-    val target = new JarData()
-    for((name, data) <- client.resources)
-      target.resources.put(name, data)
-    for((name, data) <- server.resources) target.resources.get(name) match {
-      case Some(cdata) => if(!Arrays.equals(cdata, data)) sys.error("Resource "+name+" does not match between client and server.")
-      case None => target.resources.put(name, data)
-    }
-    for((name, data) <- forge.resources) {
-      if(target.resources.contains(name) && !Arrays.equals(target.resources(name), data))
-        log.warn("Forge overrides resource "+name+" with differing file.")
-      target.resources.put(name, data)
-    }
-
-    for((name, cn) <- client.classes) {
-      val ncn = clone(cn)
-      if(!server.classes.contains(name)) markSideOnly(ncn, "CLIENT")
-      target.classes.put(name, ncn)
-    }
-    for((name, serverClass) <- server.classes) {
-      target.classes.get(name) match {
-        case Some(clientClass) =>
-          // diff fields
-          val serverFields = buildFieldMap(serverClass.fields)
-          val clientFields = buildFieldMap(clientClass.fields)
-
-          for(t <- clientFields.keySet -- serverFields.keySet)
-            markSideOnly(clientFields(t), "CLIENT")
-          for(t <- serverFields.keySet -- clientFields.keySet) {
-            markSideOnly(serverFields(t), "SERVER")
-            clientClass.fields.add(serverFields(t))
-          }
-
-          // diff methods
-          val serverMethods = buildMethodMap(serverClass.methods)
-          val clientMethods = buildMethodMap(clientClass.methods)
-
-          for(t <- clientMethods.keySet -- serverMethods.keySet)
-            markSideOnly(clientMethods(t), "CLIENT")
-          for(t <- serverMethods.keySet -- clientMethods.keySet) {
-            markSideOnly(serverMethods(t), "SERVER")
-            clientClass.methods.add(serverMethods(t))
-          }
-        case None =>
-          val ncn = clone(serverClass)
-          markSideOnly(ncn, "SERVER")
-          target.classes.put(name, ncn)
-      }
-    }
-    for((name, cn) <- forge.classes) {
-      if(target.classes.contains(name)) log.warn("Forge jar overrides class "+name+" in Minecraft binaries.")
-      target.classes.put(name, cn)
-    }
-    target
   }
 }
