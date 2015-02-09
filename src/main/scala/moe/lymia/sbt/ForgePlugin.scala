@@ -6,10 +6,12 @@ import Keys._
 import LWJGLSupport._
 
 import java.net.URL
-import java.io.File
+import java.io._
+
+import forge._
+import forge.asm._
 
 import language._
-import forge._
 
 object ForgePlugin extends Plugin {
   object forge { 
@@ -121,16 +123,20 @@ object ForgePlugin extends Plugin {
                                                  urlFilter = (x: File) => jarFileUrl(x, "binpatches.pack.lzma"), extension = ".pack.lzma"),
     forge.patchClientJar         <<= patchJarTask(forge.downloadClientJar, "minecraft_client_patched", "client"),
     forge.patchServerJar         <<= patchJarTask(forge.downloadServerJar, "minecraft_server_patched", "server"),
-    forge.mergeJars              <<= (forge.cacheDir, forge.patchClientJar, forge.patchServerJar, forge.fullVersion, streams) map 
-      { (dir, client, server, ver, streams) =>
+    forge.mergeJars              <<= (forge.cacheDir, forge.patchClientJar, forge.patchServerJar, forge.downloadUniversalJar, forge.fullVersion, streams) map 
+      { (dir, client, server, universal, ver, streams) =>
         val log = streams.log
         val outFile = dir / ("minecraft_merged-"+ver+".jar")
         if(!outFile.exists) {
-          sys.error("not yet implemented")
+          log.info("Merging client, server, and Forge universal binaries to "+outFile.getCanonicalPath)
+          writeJarFile(merge(
+            loadJarFile(new FileInputStream(client)), loadJarFile(new FileInputStream(server)),
+            loadJarFile(new FileInputStream(universal)), log
+          ), new FileOutputStream(outFile))
         }
         outFile
       },
 
-    cleanFiles <++= (forge.cacheDir, forge.cleanCache) map { (dir, clean) => if(clean) Seq(dir) else Seq() }
+    cleanFiles <++= (forge.cacheDir, forge.cleanCache) apply { (dir, clean) => if(clean) Seq(dir) else Seq() }
   )
 }
