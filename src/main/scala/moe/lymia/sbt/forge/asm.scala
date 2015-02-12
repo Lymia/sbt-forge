@@ -60,6 +60,8 @@ object asm {
     }
     inNode = null // remove reference so we don't cause big leaks
 
+    // TODO: Only do the data transformation when methodMap or fieldMap is requested
+
     // XXX: This might turn out to be unsafe?
     // TreeMap would be a little safer since ordering is a lot more guaranteed with those.
     // ... but scala.collection.mutable.TreeMap does not exist.
@@ -79,6 +81,16 @@ object asm {
     def visibleAnnotations   = classNode.visibleAnnotations
     def invisibleAnnotations = classNode.invisibleAnnotations
 
+    def syncNames() {
+      val methods = methodMap.values.toSeq
+      methodMap.clear()
+      for(m <- classNode.methods) addMethod(m)
+
+      val fields  = fieldMap.keys.toSeq
+      fieldMap.clear()
+      for(f <- classNode.fields) addField(f)
+    }
+
     override def clone() = new ClassNodeWrapper(classNode)
   }
   implicit def classNodeWrapper2ClassNode(wrapper: ClassNodeWrapper) = wrapper.classNode
@@ -92,6 +104,15 @@ object asm {
         else classes.put(cn.name, new ClassNodeWrapper(cn))
       classes
     })
+    def mapWithVisitor(visitor: ClassVisitor => ClassVisitor) =
+      new JarData(resources.clone(),
+                  classes.map { t =>
+                    val cn  = t._2
+                    val ncn = new ClassNode()
+                    cn.accept(visitor(ncn))
+                    (cn.name, new ClassNodeWrapper(ncn, noCopy = true))
+                  }).syncClassNames
+    override def clone() = new JarData(resources.clone(), classes.clone())
   }
   def loadJarFile(in: InputStream) = {
     val jarData = new JarData()
@@ -101,7 +122,7 @@ object asm {
       if(entry.getName.endsWith(".class")) {
         val cr = new ClassReader(jin)
         val cn = new ClassNode()
-        cr.accept(cn, 0)
+        cr.accept(cn, ClassReader.EXPAND_FRAMES)
         if(jarData.classes.contains(cn.name)) sys.error("Repeat class name: "+cn.name)
         jarData.classes.put(cn.name, new ClassNodeWrapper(cn, noCopy = true))
       } else jarData.resources.put(entry.getName, IO.readBytes(jin))

@@ -7,39 +7,13 @@ import java.io._
 import scala.collection.mutable
 import scala.collection.mutable.{HashMap, ArrayBuffer}
 
+import org.objectweb.asm._
+import org.objectweb.asm.commons._
+
 import language._
 
 object mapping {
   private val classNameRegex    = "([^ ]+)/([^ /]+)".r
-  private val mapClassDescRegex = "(\\[*)L([^;]+);".r
-
-  case class FunctionDesc(params: Seq[String], ret: String) {
-    override def toString = "(" + params.fold("")(_ + _) + ")" + ret
-    def map(f: String => String) = FunctionDesc(params.map(f), f(ret))
-  }
-  object DescParser extends scala.util.parsing.combinator.RegexParsers {
-    override val skipWhitespace = false
-
-    def arrayType : Parser[String] = ("[" ~> typeDesc) ^^ { case s => "["+s }
-    def baseType  : Parser[String] = "[BCDFIJSZ]".r
-    def classType : Parser[String] = "L" ~> "([^;]+)".r <~ ";"
-    def typeDesc  : Parser[String] = arrayType | baseType | classType
-    def returnType: Parser[String] = typeDesc | "V"
-
-    def desc          = typeDesc *
-    def methodDesc    = ("(" ~> desc <~ ")") ~ returnType ^^ { case a~b => FunctionDesc(a, b) }
-
-    def parseDesc(s:String) = parseAll(desc, s) match {
-      case Success(nodes, _)   => nodes
-      case NoSuccess(err,next) => sys.error("Failed to parse descriptor \""+s+"\" at column "+next.pos.column+": "+err)
-    }
-    def parseMethodDesc(s:String) = parseAll(methodDesc, s) match {
-      case Success(nodes, _)   => nodes
-      case NoSuccess(err,next) => sys.error("Failed to parse method descriptor \""+s+"\" at column "+next.pos.column+": "+err)
-    }
-  }
-
-
   def splitClassName(name: String) = name match {
     case classNameRegex(owner, name) => (owner, name)
     case _ => (".", name)
@@ -50,43 +24,39 @@ object mapping {
 
   case class FieldSpec(owner: String, name: String)
   case class MethodSpec(owner: String, name: String, desc: String)
-  class ForgeMapping(val packageMapping: mutable.Map[String, String]         = new HashMap[String, String],
-                     val classMapping  : mutable.Map[String, String]         = new HashMap[String, String],
-                     val fieldMapping  : mutable.Map[FieldSpec, FieldSpec]   = new HashMap[FieldSpec, FieldSpec],
-                     val methodMapping : mutable.Map[MethodSpec, MethodSpec] = new HashMap[MethodSpec, MethodSpec]) {
-    def mapClassName(name: String) = {
-      val (owner, clname) = splitClassName(classMapping.getOrElse(name, name))
-      joinClassName(packageMapping.getOrElse(owner, owner), clname)
+  class ForgeMapping(val packageMapping: mutable.Map[String, String]     = new HashMap[String, String],
+                     val classMapping  : mutable.Map[String, String]     = new HashMap[String, String],
+                     val fieldMapping  : mutable.Map[FieldSpec, String]  = new HashMap[FieldSpec, String],
+                     val methodMapping : mutable.Map[MethodSpec, String] = new HashMap[MethodSpec, String]) extends Remapper {
+    override def map(name: String) = classMapping.get(name) match {
+      case Some(name) => name
+      case None => 
+        val (owner, clname) = splitClassName(name)
+        joinClassName(packageMapping.getOrElse(owner, owner), clname)
     }
-    def mapDescComponent(desc: String) = desc match {
-      case mapClassDescRegex(numBracket, className) => numBracket + "L" + mapClassName(className) + ";"
-      case _ => desc
-    }
-    def mapDesc(desc: String) = DescParser.parseDesc(desc).map(mapDescComponent _).fold("")(_ + _)
-    def mapMethodDesc(desc: String) = DescParser.parseMethodDesc(desc).map(mapDescComponent _).toString
+    override def mapFieldName(owner: String, name: String, desc: String) = 
+      fieldMapping.get(FieldSpec(owner, name)).getOrElse(name)
+    override def mapMethodName(owner: String, name: String, desc: String) =
+      methodMapping.get(MethodSpec(owner, name, desc)).getOrElse(name)
+    override def mapInvokeDynamicMethodName(name: String, desc: String) =
+      sys.error("Uh, you know that you're supposed to write mods targeting Java 6, right?")
 
     def checkConsistancy() = {
       if(!(classMapping.values.toSet & classMapping.keySet).isEmpty)
-        sys.error("Possible cycle in mapping.")
-      for((FieldSpec(sOwner, sName), FieldSpec(tOwner, tName)) <- fieldMapping)
-        if(mapClassName(sOwner) != tOwner)
-          sys.error("Attempt to move field "+sName+" in "+mapClassName(sOwner)+" to "+tOwner)
-      for((MethodSpec(sOwner, sName, sDesc), MethodSpec(tOwner, tName, tDesc)) <- methodMapping) {
-        if(mapClassName(sOwner) != tOwner)
-          sys.error("Attempt to move method "+sName+sDesc+" in "+mapClassName(sOwner)+" to "+tOwner)
-        if(mapMethodDesc(sDesc) != tDesc)
-          sys.error("Descriptor "+tDesc+" does not match expected descriptor "+mapMethodDesc(sDesc)+
-                    " in method "+tOwner+"."+tName)
-      }
+        sys.error("Possible cycle in mappings: "+(classMapping.values.toSet & classMapping.keySet))
     }
-    def reverseMapping() =
-      // TODO Add consistancy checking
+    def reverseMapping() = {
+      // TODO: Add check for duplicates
       new ForgeMapping(packageMapping.map(_.swap), classMapping.map(_.swap),
-                       fieldMapping.map(_.swap), methodMapping.map(_.swap))
+                       fieldMapping.map(x => FieldSpec(map(x._1.name), x._2) -> x._1.name), 
+                       methodMapping.map(x => MethodSpec(map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name))
+    }
     
     override def clone() = 
       new ForgeMapping(packageMapping.clone(), classMapping.clone(), 
                        fieldMapping.clone(), methodMapping.clone())
+
+    def visitor(cv: ClassVisitor) = new RemappingClassAdapter(cv, this)
   }
 
   def readMappingFromSrg(in: InputStream) = {
@@ -99,13 +69,13 @@ object mapping {
     val MD = "([^ ]+)/([^ /]+) +([^ ]+) +([^ ]+)/([^ /]+) +([^ ]+)".r.anchored
     IO.readLines(new BufferedReader(new InputStreamReader(in))).foreach {
       case lineRegex("PK", PK(source, target)) => 
-        mapping.packageMapping.put(source, target)
+        if(source != target) mapping.packageMapping.put(source, target)
       case lineRegex("CL", CL(source, target)) => 
-        mapping.classMapping.put(source, target)
-      case lineRegex("FD", FD(sOwner, sName, tOwner, tName)) => 
-        mapping.fieldMapping.put(FieldSpec(sOwner, sName), FieldSpec(tOwner, tName))
-      case lineRegex("MD", MD(sOwner, sName, sDesc, tOwner, tName, tDesc)) => 
-        mapping.methodMapping.put(MethodSpec(sOwner, sName, sDesc), MethodSpec(tOwner, tName, tDesc))
+        if(source != target) mapping.classMapping.put(source, target)
+      case lineRegex("FD", FD(sOwner, sName, _, tName)) => 
+        if(sName != tName) mapping.fieldMapping.put(FieldSpec(sOwner, sName), tName)
+      case lineRegex("MD", MD(sOwner, sName, sDesc, _, tName, _)) => 
+        if(sName != tName) mapping.methodMapping.put(MethodSpec(sOwner, sName, sDesc), tName)
       case x if x.trim == "" => // ignore empty lines
       case x => sys.error("Could not parse SRG line: "+x)
     }
@@ -114,6 +84,4 @@ object mapping {
 
     mapping
   }
-
-  
 }

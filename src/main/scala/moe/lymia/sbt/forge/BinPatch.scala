@@ -56,7 +56,7 @@ object BinPatch {
       hasher.getValue.toInt
   }
   def patchJar(sourceFile: File, targetFile: File, patchSet: PatchSet, log: Logger) {
-    log.info("Patching "+sourceFile.getCanonicalPath+" to "+targetFile.getCanonicalPath)
+    log.info("Patching "+sourceFile+" to "+targetFile)
     val jarIn  = new ZipFile(sourceFile)
     val jarOut = new ZipOutputStream(new FileOutputStream(targetFile))
     val patcher = new GDiffPatcher

@@ -23,26 +23,32 @@ object Merger {
     }
   }
 
-  def merge(client: JarData, server: JarData, forge: JarData, log: Logger) = {
+  def merge(client: JarData, server: JarData, forge: JarData, config: Seq[String], log: Logger) = {
+    val dontAnnotate = config.filter(_.startsWith("!")).map(_.substring(1)).toSet
+    val exclude      = config.filter(_.startsWith("^")).map(_.substring(1))
+    // copyToServer and copyToClient do nothing in ForgeGradle. Just ignore them for now.
+    def isExcluded(name: String) = exclude.exists(name.startsWith _)
+
     val target = new JarData()
-    for((name, data) <- client.resources)
+    for((name, data) <- client.resources) if(!isExcluded(name))
       target.resources.put(name, data)
-    for((name, data) <- server.resources) target.resources.get(name) match {
+    for((name, data) <- server.resources) if(!isExcluded(name)) target.resources.get(name) match {
       case Some(cdata) => if(!Arrays.equals(cdata, data)) sys.error("Resource "+name+" does not match between client and server.")
       case None => target.resources.put(name, data)
     }
     for((name, data) <- forge.resources) {
+      if(isExcluded(name)) log.warn("Forge jar contains excluded resource "+name+".")
       if(target.resources.contains(name) && !Arrays.equals(target.resources(name), data))
         log.warn("Forge overrides resource "+name+" in Minecraft binaries.")
       target.resources.put(name, data)
     }
 
-    for((name, cn) <- client.classes) {
+    for((name, cn) <- client.classes) if(!isExcluded(name)) {
       val ncn = cn.clone()
-      if(!server.classes.contains(name)) markSideOnly(ncn, "CLIENT")
+      if(!dontAnnotate.contains(name)) if(!server.classes.contains(name)) markSideOnly(ncn, "CLIENT")
       target.classes.put(name, ncn)
     }
-    for((name, serverClass) <- server.classes) {
+    for((name, serverClass) <- server.classes) if(!isExcluded(name)) {
       target.classes.get(name) match {
         case Some(clientClass) =>
           // diff fields
@@ -64,14 +70,16 @@ object Merger {
           }
         case None =>
           val ncn = serverClass.clone()
-          markSideOnly(ncn, "SERVER")
+          if(!dontAnnotate.contains(name)) markSideOnly(ncn, "SERVER")
           target.classes.put(name, ncn)
       }
     }
     for((name, cn) <- forge.classes) {
+      if(isExcluded(name)) log.warn("Forge jar contains excluded class "+name+".")
       if(target.classes.contains(name)) log.warn("Forge jar overrides class "+name+" in Minecraft binaries.")
       target.classes.put(name, cn)
     }
+
     target
   }
 }
