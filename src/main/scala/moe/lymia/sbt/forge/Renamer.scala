@@ -79,15 +79,13 @@ object Renamer {
   }
 
   val splitNameRegex = """^(.*)\$([^$]+)$""".r
-  def findRemappableInnerClass(targetJar: JarData, mapping: ForgeMapping, log: Logger) {
+  def findRemappableInnerClass(targetClasses: mutable.Map[String, ClassNodeWrapper], mapping: ForgeMapping, log: Logger) {
     val classMapping = mapping.classMapping
-    for((name, node) <- targetJar.classes) {
+    for((name, node) <- targetClasses) {
       val outerClass = if(node.outerClass != null) node.outerClass
                        else if(!name.contains("$")) null
                        else name match {
-                         case splitNameRegex(outer, _) =>
-                           node.outerClass = outer
-                           outer
+                         case splitNameRegex(outer, _) => outer
                          case _ => null
                        }
       if(outerClass != null &&
@@ -99,6 +97,7 @@ object Renamer {
       }
     }
   }
+
   def buildSuperclassMap(seeds: Seq[String], searcher: ClasspathSearcher, log: Logger) = {
     val map = new HashMap[String, Option[Set[String]]]
     def recurseClass(name: String): Option[Set[String]] = map.get(name) match {
@@ -178,15 +177,8 @@ object Renamer {
 
     (nonMapped.toSet, remaining.toSet, noDirectMapping.toSet, equivalenceMap.toMap.mapValues(_.toSet))
   }
-  def applyMapping(targetJar: JarData, classPath: Seq[File], imapping: ForgeMapping, log: Logger,
-                   fixInnerClasses: Boolean = false) = {
+  def applyMapping(targetJar: JarData, classPath: Seq[File], imapping: ForgeMapping, log: Logger) = {
     val mapping = imapping.clone()
-
-    if(fixInnerClasses) {
-      log.info("Mapping inner class names...")
-      if(mapping.classMapping.size > 0 || mapping.packageMapping.size > 0)
-        findRemappableInnerClass(targetJar, mapping, log)
-    }
 
     log.info("Indexing dependency jars...")
     val searcher = new ClasspathSearcher(targetJar, classPath, log)

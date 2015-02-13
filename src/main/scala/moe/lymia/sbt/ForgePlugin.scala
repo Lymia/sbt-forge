@@ -86,7 +86,9 @@ object ForgePlugin extends Plugin {
       "Merges the Minecraft client and server binaries.")
 
     // Deobf merged .jar to SRG names
-    val mergedForgeBinary = TaskKey[File]("forge-merged-forge-binary",
+    val accessTransformers = TaskKey[Seq[File]]("forge-access-transformers",
+      "List of access transformers to be applied to the Forge binary.")
+    val mergedForgeBinary  = TaskKey[File]("forge-merged-forge-binary",
       "Deobfs and merges the Minecraft binary and the Minecraft Forge binary to SRG names.")
   }
 
@@ -210,6 +212,9 @@ object ForgePlugin extends Plugin {
         val forgeNotch = loadJarFile(new FileInputStream(forge.universalJar.value))
         val map = mapping.readMappingFromSrg(new FileInputStream(forge.srgFile.value))
 
+        log.info("Adding mappings for Minecraft Forge inner classes")
+        Renamer.findRemappableInnerClass(minecraftNotch.classes ++ forgeNotch.classes, map, log)
+
         log.info("Deobfing merged Minecraft binary to SRG names...")
         val minecraftSrg = Renamer.applyMapping(minecraftNotch, classpath :+ forge.universalJar.value, map, log)
         log.info("Restoring class attributes...")
@@ -217,11 +222,18 @@ object ForgePlugin extends Plugin {
         Exceptor.applyExcFile(minecraftSrg, new FileInputStream(forge.excFile.value), log)
 
         log.info("Deobfing Forge binary to SRG names...")
-        val forgeSrg = Renamer.applyMapping(forgeNotch, classpath :+ forge.mergeJars.value, map, log,
-                                            fixInnerClasses = true)
+        val forgeSrg = Renamer.applyMapping(forgeNotch, classpath :+ forge.mergeJars.value, map, log)
 
-        log.info("Merging Forge binary and Minecraft binary to "+outFile)
-        writeJarFile(Merger.addForgeClasses(minecraftSrg, forgeSrg, log), new FileOutputStream(outFile))
+        log.info("Merging Forge binary and Minecraft binary...")
+        val mergedBin = Merger.addForgeClasses(minecraftSrg, forgeSrg, log)
+        log.info("Adding SRG parameter names...")
+        Exceptor.addDefaultParameterNames(mergedBin)
+
+        log.info("Running access transformers...")
+        // TODO
+
+        log.info("Writing merged Forge binary to "+outFile)
+        writeJarFile(mergedBin, new FileOutputStream(outFile))
       }
     },
 

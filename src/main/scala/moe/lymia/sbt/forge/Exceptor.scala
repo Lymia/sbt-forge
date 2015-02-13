@@ -56,6 +56,19 @@ object Exceptor {
       l
   }
 
+  def addParameters(name: String, mn: MethodNode, paramNames: Seq[String]) = {
+    val startNode = getStartNode(mn)
+    val endNode = getEndNode(mn)
+    val isMethod = (mn.access & ACC_STATIC) == 0
+    val params = paramNames.zip(Type.getArgumentTypes(mn.desc).map(_.getDescriptor))
+    mn.localVariables = new ArrayBuffer[LocalVariableNode]
+    var indexPos = 0
+    for((name, t) <- if(isMethod) ("this", "L"+name+";") +: params else params) {
+      mn.localVariables += new LocalVariableNode(name, t, null, startNode, endNode, indexPos)
+      indexPos += (if(t == "J" || t == "Q") 2 else 1)
+    }
+  }
+
   val accessRegex    = """([^.]+)\.([^(]+)(\([^)]*\)[^-]+)-Access""".r
   val funcRegex      = """([^.]+)\.([^(]+)(\([^)]*\).+)""".r
   val funcValueRegex = """([^|]*)\|(.*)""".r
@@ -84,20 +97,22 @@ object Exceptor {
           case Some(mn) =>
             val funcValueRegex(exceptionString, parameters) = value
             if(exceptionString != "") mn.exceptions ++= exceptionString.split(",")
-
-            if(parameters != "") {
-              val isMethod = (mn.access & ACC_STATIC) == 0
-              val params = parameters.split(",").zip(Type.getArgumentTypes(mn.desc).map(_.getDescriptor))
-
-              var indexPos = 0
-              mn.localVariables = new ArrayBuffer[LocalVariableNode]
-              for((name, t) <- if(isMethod) ("this", "L"+className+";") +: params else params) {
-                mn.localVariables += new LocalVariableNode(name, t, null, getStartNode(mn), getEndNode(mn), indexPos)
-                indexPos += (if(t == "J" || t == "Q") 2 else 1)
-              }
-            }
+            if(parameters != "") addParameters(className, mn, parameters.split(","))
           case None => log.warn("Exceptor definition defines exception information for "+className+"."+methodName+desc+
                                 ", but method was not found in input jar.")
+        }
+      case _ =>
+    }
+  }
+  val srgFuncNameRegex = "func_([0-9]+)_.*".r
+  def addDefaultParameterNames(inputJar: JarData) {
+    for((clname, cn) <- inputJar.classes;
+        (MethodName(name, desc), mn) <- cn.methodMap) name match {
+      case srgFuncNameRegex(id) =>
+        if(mn.localVariables != null && mn.localVariables.isEmpty) {
+          val paramCount = Type.getArgumentTypes(mn.desc).length
+          val paramStart = if((mn.access & ACC_STATIC) == 0) 1 else 0
+          addParameters(clname, mn, (0 until paramCount).map(n => "p_"+id+"_"+(n+paramStart)+"_"))
         }
       case _ =>
     }
