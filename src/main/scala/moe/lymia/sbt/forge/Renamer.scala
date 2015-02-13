@@ -39,30 +39,26 @@ object Renamer {
     private val classCache    = new HashMap[String, ClassNodeWrapper]
     private val classSources  = new HashMap[String, () => Array[Byte]]
     private val classLocation = new HashMap[String, File]
-    def resolve(name: String) = 
-      targetJar.classes.get(name) match {
-        case Some(x) => Some(x)
-        case None => classCache.get(name) match {
-          case Some(x) => Some(x)
-          case None => classSources.get(name) match {
-            case Some(x) =>
-              val cr = new ClassReader(new ByteArrayInputStream(x()))
-              val cn = new ClassNode()
-              cr.accept(cn, ClassReader.EXPAND_FRAMES)
-              val cw = new ClassNodeWrapper(cn, noCopy = true)
-              classCache.put(name, cw)
-              Some(cw)
-            case None => None
-          }
-        }
+    def resolve(name: String): Option[ClassNodeWrapper] = 
+      targetJar.classes.get(name) orElse classCache.get(name) orElse classSources.get(name).map { x =>
+        val cr = new ClassReader(new ByteArrayInputStream(x()))
+        val cn = new ClassNode()
+        cr.accept(cn, ClassReader.EXPAND_FRAMES)
+        val cw = new ClassNodeWrapper(cn, noCopy = true)
+        classCache.put(name, cw)
+        cw
       }
-    def isClassMutable(name: String) = targetJar.classes.contains(name)
+    def classLocation(name: String): String = 
+      targetJar.classes.get(name).map(_ => "<target jar>") orElse
+      classLocation.get(name).map(_.toString) getOrElse
+      (if(isSystemClass(name)) "<system classloader>" else "<unknown>")
 
     for(path <- classPath) {
       log.debug("Indexing classes in "+path)
       if(path.isDirectory)
         for((name, file) <- findClassesInDirectory("", path))
-          if(!classSources.contains(name)) {
+          if(targetJar.classes.contains(name)) log.warn(path+" defines class "+name+" already defined in target jar!")
+          else if(!classSources.contains(name)) {
             classSources.put(name, () => IO.readBytes(file))
             classLocation.put(name, path)
           } else log.warn(path+" defines class "+name+" already defined in "+classSources(name)+"!")
@@ -70,7 +66,8 @@ object Renamer {
         val jarFile = new JarFile(path)
         for(entry <- jarFile.entries()) entry.getName match {
           case classFileRegex(name) =>
-            if(!classSources.contains(name)) {
+            if(targetJar.classes.contains(name)) log.warn(path+" defines class "+name+" already defined in target jar!")
+            else if(!classSources.contains(name)) {
               classSources.put(name, () => IO.readBytes(new URL("jar:"+path.toURI.toURL+"!/"+entry.getName).openStream()))
               classLocation.put(name, path)
             } else log.warn(path+" defines class "+name+" already defined in "+classSources(name)+"!")
@@ -92,7 +89,6 @@ object Renamer {
         classMapping.put(name, newName)
       }
   }
-
   def buildSuperclassMap(seeds: Seq[String], searcher: ClasspathSearcher, log: Logger) = {
     val map = new HashMap[String, Option[Set[String]]]
     def recurseClass(name: String): Option[Set[String]] = map.get(name) match {
@@ -100,7 +96,8 @@ object Renamer {
       case None =>
         searcher.resolve(name) match {
           case Some(node) =>
-            val seq = Some(recurseClass(node.superName).getOrElse(Set()) ++ 
+            val seq = Some(Set(node.superName) ++ node.interfaces ++
+                           recurseClass(node.superName).getOrElse(Set()) ++ 
                            (node.interfaces map (recurseClass _) flatMap (_.getOrElse(Set()))))
             map.put(name, seq)
             seq
@@ -112,14 +109,6 @@ object Renamer {
     for(name <- seeds) recurseClass(name)
     map.flatMap(x => x._2.map(v => Map(x._1 -> v)).getOrElse(Map())).toMap
   }
-  def buildSubclassMap(superclass: Map[String, Set[String]]) = {
-    val subclass = new HashMap[String, mutable.Set[String]] with MultiMap[String, String]
-    for((name, _) <- superclass) subclass.put(name, new mutable.HashSet[String])
-    for((sub, supers) <- superclass ;
-        `super` <- supers)
-      subclass.addBinding(`super`, sub)
-    subclass.map(x => (x._1, x._2.toSet)).toMap
-  }
   // TODO: Treat private classes different
   def findRenamingCandidates(searcher: ClasspathSearcher, mapping: ForgeMapping,
                              classList: Seq[String], log: Logger) = {
@@ -127,19 +116,27 @@ object Renamer {
     val renameCandidates = new HashMap[MethodName, mutable.Set[String]] with MultiMap[MethodName, String]
     for(name <- classList) {
       val cn = searcher.resolve(name) getOrElse sys.error("Class "+name+" disappeared??")
-      for((name, _) <- cn.methodMap)
+      for((name, mn) <- cn.methodMap)
         if(couldRename.contains(name))
-          renameCandidates.addBinding(name, cn.name)
+          if((mapping.methodMapping.contains(MethodSpec(cn.name, name.name, name.desc)) ||
+             !((mn.access & ACC_STATIC) == ACC_STATIC || (mn.access & ACC_PRIVATE) == ACC_PRIVATE)))
+            renameCandidates.addBinding(name, cn.name)
+          else log.debug("Method "+cn.name+"."+name.name+name.desc+" is private or static, and will not be "+
+                         "considered for propergation.")
     }
     renameCandidates.map(x => (x._1, x._2.toSet)).toMap
   }
+
+  private def prettySeq[T](s: Seq[T]) = 
+    if(s.size == 0) "<nothing>"
+    else if(s.length == 1) s.head.toString
+    else "["+s.map(_.toString).reduce(_ + "," + _)+"]"
   def buildEquivalenceSets(methodName: String, methodDesc: String,
                            seeds: Seq[String], candidates: Set[String], 
                            superclassMap: Map[String, Set[String]],
-                           subclassMap  : Map[String, Set[String]],
                            mapping      : ForgeMapping, log: Logger) = {
     def isSuperclass(name: String, target: String) = superclassMap(name).contains(target)
-    def isSubclass  (name: String, target: String) = subclassMap  (name).contains(target)
+    def isSubclass  (name: String, target: String) = superclassMap(target).contains(name)
     def recurse(sets: Map[String, Set[String]], remaining: Seq[String]): Map[String, Set[String]] = {
       val (satisified, left) = remaining.map{ name =>
         (name, sets.filter(x => x._2.exists(target => isSuperclass(name, target) || isSubclass(name, target))).map(_._1).toSet)
@@ -147,7 +144,7 @@ object Renamer {
 
       val nsets = satisified.foldLeft(sets){(sets, v) => 
         val (name, matchedSets) = v
-        val (toMerge, left) = sets.partition(x => matchedSets.contains(x._1))
+        val (toMerge, left) = sets.partition(x => matchedSets.intersect(x._2).size > 0)
         val sourceMappings = toMerge.map(x => mapping.methodMapping(MethodSpec(x._1, methodName, methodDesc))).toSet
         if(sourceMappings.size > 1) {
           log.error("Mapping conflict while finding methods related to "+methodName+methodDesc)
@@ -159,11 +156,14 @@ object Renamer {
             log.error("    "+name+"."+methodName+methodDesc+" -> "+resolve+": "+set.reduce(_ + ", " + _))
           }
           sys.error("Mapping conflict found!")
-        } else Map(toMerge.head._1 -> (toMerge.map(_._2).reduce(_ ++ _) + name))
+        } else Map(toMerge.head._1 -> (toMerge.map(_._2).reduce(_ ++ _) + name)) ++ left
       }
 
-      if(left.length == 0 || satisified.length == 0) nsets
-      else recurse(nsets, left.map(_._1))
+      if(left.length == 0 || satisified.length == 0) {
+        if(left.length > 0) log.debug("Classes have method "+methodName+methodDesc+
+                                      ", but no mapping found: "+prettySeq(left.map(_._1)))
+        nsets
+      } else recurse(nsets, left.map(_._1))
     }
     recurse(seeds.map(x => x -> Set(x)).toMap, (candidates -- seeds).toSeq)
   }
@@ -178,7 +178,6 @@ object Renamer {
 
     log.info("Building super/subclass maps...")
     val superclassMap    = buildSuperclassMap(targetJar.classes.keys.toSeq, searcher, log)
-    val subclassMap      = buildSubclassMap(superclassMap)
 
     log.info("Propergating mapping...")
     val renameCandidates = findRenamingCandidates(searcher, mapping, superclassMap.keys.toSeq, log)
@@ -187,11 +186,17 @@ object Renamer {
       val (seeds, otherCandidates) = candidates.partition(n =>
         mapping.methodMapping.contains(MethodSpec(n, name, desc)))
       buildEquivalenceSets(name, desc, seeds.toSeq, otherCandidates,
-                           superclassMap, subclassMap, mapping, log) foreach { t =>
+                           superclassMap, mapping, log) foreach { t =>
         val (seed, set) = t
         val target = mapping.methodMapping(MethodSpec(seed, name, desc))
         val (addTo, left) = set.partition(x => !mapping.methodMapping.contains(MethodSpec(x, name, desc)))
-        if(addTo.size != 0) log.debug("Propergating remapping for "+name+desc+" from "+left+" to "+addTo+".")
+        if(addTo.size != 0) log.debug("Propergating remapping "+name+desc+" -> "+target+" from "+
+                                      prettySeq(left.toSeq)+" to "+prettySeq(addTo.toSeq)+".")
+        val externalProp = addTo.filter(x => !targetJar.classes.contains(x))
+        if(externalProp.size > 0) log.warn("The remapping "+name+desc+" -> "+target+" was propergated to the following "+
+                                           "external dependencies. They must be deobfusicated with a similar mapper, or "+
+                                           "else bad things will happen: "+
+                                           externalProp.map(x => x + " in " + searcher.classLocation(x)).reduce(_ + ", " + _))
         addTo foreach { n =>
           mapping.methodMapping.put(MethodSpec(n, name, desc), target)
         }

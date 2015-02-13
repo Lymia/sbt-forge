@@ -77,10 +77,16 @@ object ForgePlugin extends Plugin {
       "Merges the Minecraft Forge binary and the Minecraft client and server binaries.")
 
     // Deobf merged .jar to SRG names
-    val srgFile    = TaskKey[File]("forge-srg-file",
+    val srgFile      = TaskKey[File]("forge-srg-file",
       "The .srg file used for notch->SRG deobf. "+
       "By default, extracts packaged.srg from the userdev archive.")
-    val deobfToSrg = TaskKey[File]("forge-deobf-to-srg",
+    val exceptorJson = TaskKey[File]("forge-exceptor-json",
+      "The .json file used to restore inner/outer class attributes to classes. "+
+      "By default, extracts exceptor.json from the userdev archive.")
+    val excFile      = TaskKey[File]("forge-exc-file",
+      "The .exc file used to restore exception data, add __OBFID fields, and constructor parameter names to classes. "+
+      "By default, extracts packaged.json from the userdev archive.")
+    val deobfToSrg   = TaskKey[File]("forge-deobf-to-srg",
       "Deobfs the merged Forge binary from Notch names to SRG names, "+
       "then restores class attributes.")
   }
@@ -188,16 +194,21 @@ object ForgePlugin extends Plugin {
       outFile
     },
 
-    extractTask(forge.srgFile, forge.userdevArchive, "conf/packaged.srg", "packaged.srg", forge.forgeDir),
+    extractTask(forge.srgFile     , forge.userdevArchive, "conf/packaged.srg" , "packaged.srg" , forge.forgeDir),
+    extractTask(forge.exceptorJson, forge.userdevArchive, "conf/exceptor.json", "exceptor.json", forge.forgeDir),
+    extractTask(forge.excFile     , forge.userdevArchive, "conf/packaged.exc" , "packaged.exc" , forge.forgeDir),
     forge.deobfToSrg := {
       val log = streams.value.log
       val outFile = forge.forgeDir.value / "minecraft_srg.jar"
       if(!outFile.exists) {
         log.info("Deobfing merged Minecraft binary to SRG names at "+outFile)
         val map = mapping.readMappingFromSrg(new FileInputStream(forge.srgFile.value))
-        writeJarFile(Renamer.applyMapping(loadJarFile(new FileInputStream(forge.mergeJars.value)),
-                                          (fullClasspath in Compile).value.map(_.data), map,
-                                          log), new FileOutputStream(outFile))
+        val jarFile = Renamer.applyMapping(loadJarFile(new FileInputStream(forge.mergeJars.value)),
+                                           (fullClasspath in Compile).value.map(_.data), map, log)
+        log.info("Restoring class attributes...")
+        Exceptor.applyExceptorJson(jarFile, IO.read(forge.exceptorJson.value), log)
+        Exceptor.applyExcFile(jarFile, new FileInputStream(forge.excFile.value), log)
+        writeJarFile(jarFile, new FileOutputStream(outFile))
       }
       outFile
     },

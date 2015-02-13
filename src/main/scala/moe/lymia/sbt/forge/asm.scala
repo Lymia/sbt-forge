@@ -137,6 +137,7 @@ object asm {
       jout.write(data)
     }
     for((name, cn) <- data.classes) {
+      println(name)
       jout.putNextEntry(new JarEntry(name+".class"))
       val cw = new ClassWriter(ASM4)
       cn.accept(cw)
