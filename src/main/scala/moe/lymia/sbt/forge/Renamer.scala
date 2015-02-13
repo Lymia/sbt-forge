@@ -50,7 +50,7 @@ object Renamer {
       }
     def classLocation(name: String): String = 
       targetJar.classes.get(name).map(_ => "<target jar>") orElse
-      classLocation.get(name).map(_.toString) getOrElse
+      classLocation.get(name).map(_.getName) getOrElse
       (if(isSystemClass(name)) "<system classloader>" else "<unknown>")
 
     for(path <- classPath) {
@@ -78,16 +78,26 @@ object Renamer {
     }
   }
 
+  val splitNameRegex = """^(.*)\$([^$]+)$""".r
   def findRemappableInnerClass(targetJar: JarData, mapping: ForgeMapping, log: Logger) {
     val classMapping = mapping.classMapping
-    for((name, node) <- targetJar.classes)
-      if(node.outerClass != null &&
-         !classMapping.contains(name) && classMapping.contains(node.outerClass) &&
-         name.startsWith(node.outerClass+"$")) {
-        val newName = classMapping(node.outerClass) + name.substring(node.outerClass.length)
+    for((name, node) <- targetJar.classes) {
+      val outerClass = if(node.outerClass != null) node.outerClass
+                       else if(!name.contains("$")) null
+                       else name match {
+                         case splitNameRegex(outer, _) =>
+                           node.outerClass = outer
+                           outer
+                         case _ => null
+                       }
+      if(outerClass != null &&
+         !classMapping.contains(name) && classMapping.contains(outerClass) &&
+         name.startsWith(outerClass+"$")) {
+        val newName = classMapping(outerClass) + name.substring(outerClass.length)
         log.debug("Adding mapping for inner class "+name+" to "+newName)
         classMapping.put(name, newName)
       }
+    }
   }
   def buildSuperclassMap(seeds: Seq[String], searcher: ClasspathSearcher, log: Logger) = {
     val map = new HashMap[String, Option[Set[String]]]
@@ -109,7 +119,6 @@ object Renamer {
     for(name <- seeds) recurseClass(name)
     map.flatMap(x => x._2.map(v => Map(x._1 -> v)).getOrElse(Map())).toMap
   }
-  // TODO: Treat private classes different
   def findRenamingCandidates(searcher: ClasspathSearcher, mapping: ForgeMapping,
                              classList: Seq[String], log: Logger) = {
     val couldRename = mapping.methodMapping.keys.map(x => MethodName(x.name, x.desc)).toSet    
@@ -118,60 +127,66 @@ object Renamer {
       val cn = searcher.resolve(name) getOrElse sys.error("Class "+name+" disappeared??")
       for((name, mn) <- cn.methodMap)
         if(couldRename.contains(name))
-          if((mapping.methodMapping.contains(MethodSpec(cn.name, name.name, name.desc)) ||
-             !((mn.access & ACC_STATIC) == ACC_STATIC || (mn.access & ACC_PRIVATE) == ACC_PRIVATE)))
+          if((mn.access & ACC_STATIC) != ACC_STATIC && (mn.access & ACC_PRIVATE) != ACC_PRIVATE)
             renameCandidates.addBinding(name, cn.name)
           else log.debug("Method "+cn.name+"."+name.name+name.desc+" is private or static, and will not be "+
                          "considered for propergation.")
     }
-    renameCandidates.map(x => (x._1, x._2.toSet)).toMap
+    renameCandidates.toMap.mapValues(_.toSet)
   }
-
   private def prettySeq[T](s: Seq[T]) = 
     if(s.size == 0) "<nothing>"
     else if(s.length == 1) s.head.toString
     else "["+s.map(_.toString).reduce(_ + "," + _)+"]"
-  def buildEquivalenceSets(methodName: String, methodDesc: String,
-                           seeds: Seq[String], candidates: Set[String], 
+  private def prettySeq[T](s: Set[T]): String =
+    prettySeq(s.toSeq)
+  def buildEquivalenceSets(methodName: String, methodDesc: String, candidates: Set[String], 
                            superclassMap: Map[String, Set[String]],
                            mapping      : ForgeMapping, log: Logger) = {
     def isSuperclass(name: String, target: String) = superclassMap(name).contains(target)
     def isSubclass  (name: String, target: String) = superclassMap(target).contains(name)
-    def recurse(sets: Map[String, Set[String]], remaining: Seq[String]): Map[String, Set[String]] = {
-      val (satisified, left) = remaining.map{ name =>
-        (name, sets.filter(x => x._2.exists(target => isSuperclass(name, target) || isSubclass(name, target))).map(_._1).toSet)
-      }.partition(x => x._2.size > 0)
+    def resolve     (name: String) = mapping.methodMapping.get(MethodSpec(name, methodName, methodDesc))
 
-      val nsets = satisified.foldLeft(sets){(sets, v) => 
-        val (name, matchedSets) = v
-        val (toMerge, left) = sets.partition(x => matchedSets.intersect(x._2).size > 0)
-        val sourceMappings = toMerge.map(x => mapping.methodMapping(MethodSpec(x._1, methodName, methodDesc))).toSet
-        if(sourceMappings.size > 1) {
+    val (mapped, nonMapped) = candidates.partition(x => !resolve(x).isEmpty)
+    val equivalenceMap = new HashMap[String, mutable.Set[String]] with MultiMap[String, String]
+    for(name <- mapped) equivalenceMap.addBinding(resolve(name).get, name)
+
+    def mappingStep(remaining: Seq[String], mappingFunction: (String, String) => Boolean) = {
+      val (mapped, left) = remaining.map(name => 
+        (name, equivalenceMap.filter(t => t._2.exists(x => mappingFunction(x, name))).map(_._1))).partition(_._2.size > 0)
+      for((name, inSets) <- mapped) {
+        if(inSets.size > 1) {
           log.error("Mapping conflict while finding methods related to "+methodName+methodDesc)
           log.error("  Currently processing class: "+name)
-          log.error("  Conflicting target names: "+sourceMappings.reduce(_ + ", " + _))
-          log.error("  Involving the following mapping sets:")
-          for((name, set) <- sets) {
-            val resolve = mapping.methodMapping(MethodSpec(name, methodName, methodDesc))
-            log.error("    "+name+"."+methodName+methodDesc+" -> "+resolve+": "+set.reduce(_ + ", " + _))
-          }
-          sys.error("Mapping conflict found!")
-        } else Map(toMerge.head._1 -> (toMerge.map(_._2).reduce(_ ++ _) + name)) ++ left
+          log.error("  Conflicting target names: "+inSets.reduce(_ + ", " + _))
+          log.error("  Relevant mapping sets:")
+          for(set <- inSets)
+            log.error("    "+set+" in "+prettySeq(equivalenceMap(set).toSeq))
+          sys.error("Mapping conflict while procesing "+methodName+methodDesc+"!")
+        } else equivalenceMap.addBinding(inSets.head, name)
       }
-
-      if(left.length == 0 || satisified.length == 0) {
-        if(left.length > 0) log.debug("Classes have method "+methodName+methodDesc+
-                                      ", but no mapping found: "+prettySeq(left.map(_._1)))
-        nsets
-      } else recurse(nsets, left.map(_._1))
+      left.map(_._1)
     }
-    recurse(seeds.map(x => x -> Set(x)).toMap, (candidates -- seeds).toSeq)
+
+    val noDirectMapping = mappingStep(nonMapped.toSeq, isSubclass)
+    @annotation.tailrec def mapRecursive(candidates: Seq[String]): Seq[String] = {
+      val remaining = mappingStep(candidates, (a, b) => isSuperclass(a, b) || isSubclass(a, b))
+      if(remaining == candidates || remaining.length == 0) remaining
+      else mapRecursive(remaining)
+    }
+    val remaining = mapRecursive(noDirectMapping)
+
+    (nonMapped.toSet, remaining.toSet, noDirectMapping.toSet, equivalenceMap.toMap.mapValues(_.toSet))
   }
-  def applyMapping(targetJar: JarData, classPath: Seq[File], imapping: ForgeMapping, log: Logger) = {
-    log.info("Mapping class names...")
+  def applyMapping(targetJar: JarData, classPath: Seq[File], imapping: ForgeMapping, log: Logger,
+                   fixInnerClasses: Boolean = false) = {
     val mapping = imapping.clone()
-    if(mapping.classMapping.size > 0 || mapping.packageMapping.size > 0)
-      findRemappableInnerClass(targetJar, mapping, log)
+
+    if(fixInnerClasses) {
+      log.info("Mapping inner class names...")
+      if(mapping.classMapping.size > 0 || mapping.packageMapping.size > 0)
+        findRemappableInnerClass(targetJar, mapping, log)
+    }
 
     log.info("Indexing dependency jars...")
     val searcher = new ClasspathSearcher(targetJar, classPath, log)
@@ -181,25 +196,48 @@ object Renamer {
 
     log.info("Propergating mapping...")
     val renameCandidates = findRenamingCandidates(searcher, mapping, superclassMap.keys.toSeq, log)
+    var givenIndirectMappingLecture = false
     renameCandidates.foreach { t =>
       val (MethodName(name, desc), candidates) = t
-      val (seeds, otherCandidates) = candidates.partition(n =>
-        mapping.methodMapping.contains(MethodSpec(n, name, desc)))
-      buildEquivalenceSets(name, desc, seeds.toSeq, otherCandidates,
-                           superclassMap, mapping, log) foreach { t =>
-        val (seed, set) = t
-        val target = mapping.methodMapping(MethodSpec(seed, name, desc))
-        val (addTo, left) = set.partition(x => !mapping.methodMapping.contains(MethodSpec(x, name, desc)))
-        if(addTo.size != 0) log.debug("Propergating remapping "+name+desc+" -> "+target+" from "+
-                                      prettySeq(left.toSeq)+" to "+prettySeq(addTo.toSeq)+".")
-        val externalProp = addTo.filter(x => !targetJar.classes.contains(x))
-        if(externalProp.size > 0) log.warn("The remapping "+name+desc+" -> "+target+" was propergated to the following "+
-                                           "external dependencies. They must be deobfusicated with a similar mapper, or "+
-                                           "else bad things will happen: "+
-                                           externalProp.map(x => x + " in " + searcher.classLocation(x)).reduce(_ + ", " + _))
-        addTo foreach { n =>
-          mapping.methodMapping.put(MethodSpec(n, name, desc), target)
+      val (noMapping, remaining, noDirectMapping, equivalenceMap) = 
+        buildEquivalenceSets(name, desc, candidates, superclassMap, mapping, log) 
+      if(remaining.size > 0)
+        log.debug("Classes "+prettySeq(remaining)+" contain an method "+name+desc+", but, no relationship to remapped methods was found.")
+      for((target, classes) <- equivalenceMap) {
+        val sourceClasses   = classes -- noMapping
+        val directClasses   = classes -- noDirectMapping -- sourceClasses
+        val indirectClasses = classes -- directClasses -- sourceClasses
+        val newMappings     = classes intersect noMapping
+
+        val externalIndirect = indirectClasses.filter(x => !targetJar.classes.contains(x))
+        // XXX: Should this be an outright error?
+        if(externalIndirect.size > 0) {
+          val externalClassLine = 
+            "External classes: "+externalIndirect.map(x => x + " in " + searcher.classLocation(x)).reduce(_ + ", " + _)
+          if(!givenIndirectMappingLecture) {
+            log.warn("The remapping "+name+desc+" -> "+target+" will be indirectly propergated through external dependencies! "+
+                     "This is extermely unsafe, and MOST LIKELY AN ERROR!!")
+            log.warn("A method in one of your classes must be renamed to match a method it overrides or implements. "+
+                     "Another of its superclasses declares an unrelated method with the same name and signature, "+
+                     "which must be renamed as well to prevent errors.")
+            log.warn("Unfortunately, one of these classes exists inside an external dependency. "+
+                     "As indirect mapping can cause previously unmapped methods to be mapped through the addition of a new class, "+
+                     "this remapping could very well not exist in the external dependency!")
+            log.warn("Ignore this warning only if you know exactly what you are doing!")
+            log.warn(externalClassLine)
+            log.warn("")
+            givenIndirectMappingLecture = true
+          } else
+            log.warn("The remapping "+name+desc+" -> "+target+" will be indirectly propergated through external dependencies! "+
+                     "This is extermely unsafe, and MOST LIKELY AN ERROR!! " + externalClassLine)
         }
+
+        if(directClasses.size > 0)
+          log.debug("Propergating remapping "+name+desc+" -> "+target+" from "+prettySeq(directClasses)+" to "+prettySeq(directClasses)+".")
+        if(indirectClasses.size > 0)
+          log.debug("Indirectly propergating remapping "+name+desc+" -> "+target+" from "+prettySeq(directClasses)+" to "+prettySeq(indirectClasses)+".")
+
+        for(n <- newMappings) mapping.methodMapping.put(MethodSpec(n, name, desc), target)
       }
     }
 

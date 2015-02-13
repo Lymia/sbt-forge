@@ -23,7 +23,7 @@ object Merger {
     }
   }
 
-  def merge(client: JarData, server: JarData, forge: JarData, config: Seq[String], log: Logger) = {
+  def merge(client: JarData, server: JarData, config: Seq[String], log: Logger) = {
     val dontAnnotate = config.filter(_.startsWith("!")).map(_.substring(1)).toSet
     val exclude      = config.filter(_.startsWith("^")).map(_.substring(1))
     // copyToServer and copyToClient do nothing in ForgeGradle. Just ignore them for now.
@@ -35,12 +35,6 @@ object Merger {
     for((name, data) <- server.resources) if(!isExcluded(name)) target.resources.get(name) match {
       case Some(cdata) => if(!Arrays.equals(cdata, data)) sys.error("Resource "+name+" does not match between client and server.")
       case None => target.resources.put(name, data)
-    }
-    for((name, data) <- forge.resources) {
-      if(isExcluded(name)) log.warn("Forge jar contains excluded resource "+name+".")
-      if(target.resources.contains(name) && !Arrays.equals(target.resources(name), data))
-        log.warn("Forge overrides resource "+name+" in Minecraft binaries.")
-      target.resources.put(name, data)
     }
 
     for((name, cn) <- client.classes) if(!isExcluded(name)) {
@@ -74,8 +68,21 @@ object Merger {
           target.classes.put(name, ncn)
       }
     }
+
+    target
+  }
+  def addForgeClasses(minecraft: JarData, forge: JarData, log: Logger) = {
+    val target = new JarData()
+
+    for((name, data) <- minecraft.resources) target.resources.put(name, data)
+    for((name, data) <- forge.resources) {
+      if(target.resources.contains(name) && !Arrays.equals(target.resources(name), data))
+        log.warn("Forge overrides resource "+name+" in Minecraft binaries.")
+      target.resources.put(name, data)
+    }
+
+    for((name, cn) <- minecraft.classes) target.classes.put(name, cn.clone())
     for((name, cn) <- forge.classes) {
-      if(isExcluded(name)) log.warn("Forge jar contains excluded class "+name+".")
       if(target.classes.contains(name)) log.warn("Forge jar overrides class "+name+" in Minecraft binaries.")
       target.classes.put(name, cn)
     }

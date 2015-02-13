@@ -86,32 +86,20 @@ object Exceptor {
             if(exceptionString != "") mn.exceptions ++= exceptionString.split(",")
 
             if(parameters != "") {
-              val paramNames = (if((mn.access & ACC_STATIC) == 0) "this" +: parameters.split(",") 
-                                else parameters.split(","))
+              val isMethod = (mn.access & ACC_STATIC) == 0
+              val params = parameters.split(",").zip(Type.getArgumentTypes(mn.desc).map(_.getDescriptor))
+
+              var indexPos = 0
               mn.localVariables = new ArrayBuffer[LocalVariableNode]
-              for((name, i) <- paramNames.zipWithIndex)
-                mn.localVariables += new LocalVariableNode(name, if(name == "this") "L"+className+";" else null, null,
-                                                           getStartNode(mn), getEndNode(mn), i)
+              for((name, t) <- if(isMethod) ("this", "L"+className+";") +: params else params) {
+                mn.localVariables += new LocalVariableNode(name, t, null, getStartNode(mn), getEndNode(mn), indexPos)
+                indexPos += (if(t == "J" || t == "Q") 2 else 1)
+              }
             }
           case None => log.warn("Exceptor definition defines exception information for "+className+"."+methodName+desc+
                                 ", but method was not found in input jar.")
         }
-      case className => inputJar.classes.get(className) match {
-        case Some(cn) =>
-          cn.fieldMap.get(FieldName("__OBFID", "Ljava/lang/String;")) match {
-            case Some(fn) =>
-              if(fn.value != value) {
-                log.warn("Class "+className+" already defines an __OBFID: "+fn.value)
-                log.warn("This conflicts with the __OBFID declared in the exceptor definition: "+value)
-              }
-            case None => 
-              if((cn.access & ACC_INTERFACE) == ACC_INTERFACE)
-                cn.addField(new FieldNode(ACC_PRIVATE | ACC_STATIC | ACC_FINAL, 
-                                          "__OBFID", "Ljava/lang/String;", null, value))
-          }
-        case None => 
-          log.warn("Exceptor definition includes an __OBFID for "+className+", but that class could not be found.")
-      }
+      case _ =>
     }
   }
 }
