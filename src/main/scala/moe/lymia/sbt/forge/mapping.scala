@@ -68,6 +68,7 @@ object mapping {
     val FD = "([^ ]+)/([^ /]+) +([^ ]+)/([^ /]+)".r.anchored
     val MD = "([^ ]+)/([^ /]+) +([^ ]+) +([^ ]+)/([^ /]+) +([^ ]+)".r.anchored
     IO.readLines(new BufferedReader(new InputStreamReader(in))).foreach {
+      case lineRegex("XX", _) =>
       case lineRegex("PK", PK(source, target)) => 
         if(source != target) mapping.packageMapping.put(source, target)
       case lineRegex("CL", CL(source, target)) => 
@@ -82,6 +83,33 @@ object mapping {
     
     mapping.checkConsistancy()
 
+    mapping
+  }
+  def dumpMapping(os: OutputStream, mapping: ForgeMapping) {
+    val out = new PrintStream(os)
+    for((source, target) <- mapping.packageMapping) out.println("PK: "+source+" "+target)
+    for((source, target) <- mapping.classMapping  ) out.println("CL: "+source+" "+target)
+    for((FieldSpec(owner, name), target) <- mapping.fieldMapping)
+      out.println("FD: "+owner+"/"+name+" "+mapping.map(owner)+"/"+target)
+    for((MethodSpec(owner, name, desc), target) <- mapping.methodMapping)
+      out.println("MD: "+owner+"/"+name+" "+desc+" "+mapping.map(owner)+"/"+target+" "+mapping.mapMethodDesc(desc))
+    out.close()
+  }
+
+  def readCsvMappings(mapping: Seq[String]) =
+    mapping.map(_.split(",").map(_.trim)).filter(_.length >= 2).map(a => a(0) -> a(1)).toMap
+  def mappingFromConfFiles(ref: JarData, fields: Seq[String], methods: Seq[String]) = {
+    val mapping        = new ForgeMapping()
+    val fieldMappings  = readCsvMappings(fields)
+    val methodMappings = readCsvMappings(methods)
+    for((className, cn) <- ref.classes) {
+      for((MethodName(name, desc), _) <- cn.methodMap;
+          target                      <- methodMappings.get(name))
+        mapping.methodMapping.put(MethodSpec(className, name, desc), target)
+      for((FieldName(name, desc), _) <- cn.fieldMap;
+          target                     <- fieldMappings.get(name))
+        mapping.fieldMapping.put(FieldSpec(className, name), target)
+    }
     mapping
   }
 }

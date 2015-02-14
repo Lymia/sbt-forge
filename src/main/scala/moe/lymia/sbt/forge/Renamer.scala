@@ -80,21 +80,12 @@ object Renamer {
 
   val splitNameRegex = """^(.*)\$([^$]+)$""".r
   def findRemappableInnerClass(targetClasses: mutable.Map[String, ClassNodeWrapper], mapping: ForgeMapping, log: Logger) {
-    val classMapping = mapping.classMapping
-    for((name, node) <- targetClasses) {
-      val outerClass = if(node.outerClass != null) node.outerClass
-                       else if(!name.contains("$")) null
-                       else name match {
-                         case splitNameRegex(outer, _) => outer
-                         case _ => null
-                       }
-      if(outerClass != null &&
-         !classMapping.contains(name) && classMapping.contains(outerClass) &&
-         name.startsWith(outerClass+"$")) {
-        val newName = classMapping(outerClass) + name.substring(outerClass.length)
-        log.debug("Adding mapping for inner class "+name+" to "+newName)
-        classMapping.put(name, newName)
-      }
+    for((name, cn) <- targetClasses   if  mapping.classMapping.contains(name);
+        icn        <- cn.innerClasses if !mapping.classMapping.contains(icn.name) &&
+                                          icn.name.startsWith(name+"$")) {
+        val newName = mapping.classMapping(name) + icn.name.substring(name.length)
+        log.debug("Adding mapping for inner class "+icn.name+" to "+newName)
+        mapping.classMapping.put(icn.name, newName)
     }
   }
 
@@ -235,5 +226,14 @@ object Renamer {
 
     log.info("Mapping classes...")
     targetJar.mapWithVisitor(mapping.visitor _)
+  }
+
+  def mapParams(targetJar: JarData, params: Seq[String]) {
+    val paramMapping = readCsvMappings(params)
+    for((_, cn) <- targetJar.classes;
+        mn      <- cn.methods if mn.localVariables != null;
+        lvn     <- mn.localVariables;
+        target  <- paramMapping.get(lvn.name))
+      lvn.name = target
   }
 }
