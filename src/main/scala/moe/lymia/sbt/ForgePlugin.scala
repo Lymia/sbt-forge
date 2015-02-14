@@ -112,12 +112,6 @@ object ForgePlugin extends Plugin {
       }
       target
     }
-    def copyUrlTask[T](task: TaskKey[File], versionTask: SettingKey[String],
-                       urlSource: TaskKey[T], outputName: String => String, 
-                       targetDir: SettingKey[File],
-                       urlFilter: T => String = (x: Any) => x.toString,
-                       verb: String = "Copying") =
-      task := copyUrl(targetDir.value / outputName(versionTask.value), urlFilter(urlSource.value), streams.value.log, verb)
 
     def jarFileUrl(jar: File, file: String) =
       "jar:"+jar.toURI.toURL+"!/"+file
@@ -135,13 +129,10 @@ object ForgePlugin extends Plugin {
       }
 
     def extractTask(task: TaskKey[File], urlSource: TaskKey[File], sourceName: String, outputName: String, targetDir: SettingKey[File]) =
-      copyUrlTask(task, forge.fullVersion, urlSource, _ => outputName, targetDir,
-                  urlFilter = (x: File) => jarFileUrl(x, sourceName),
-                  verb = "Extracting")
+      task := copyUrl(targetDir.value / outputName, jarFileUrl(urlSource.value, sourceName), streams.value.log, "Extracting")
     def downloadTask(task: TaskKey[File], versionKey: SettingKey[String], urlSource: TaskKey[String],
-                     outputName: String, ext: String) =
-      copyUrlTask(task, versionKey, urlSource, version => outputName+"-"+version+ext, forge.dlCacheDir, 
-                  verb = "Downloading")
+                     outputName: String, ext: String) =    
+      task := copyUrl(forge.dlCacheDir.value / (outputName + "-" + versionKey.value + ext), urlSource.value, streams.value.log, "Downloading")
   }
   import forgeHelpers._
 
@@ -204,6 +195,12 @@ object ForgePlugin extends Plugin {
         ), new FileOutputStream(outFile))
       }
     },
+    forge.accessTransformers := Seq(
+      copyUrl(forge.forgeDir.value / "forge_at.cfg", jarFileUrl(forge.userdevArchive.value, "src/main/resources/forge_at.cfg"), 
+              streams.value.log, "Extracting"),
+      copyUrl(forge.forgeDir.value / "fml_at.cfg"  , jarFileUrl(forge.userdevArchive.value, "src/main/resources/fml_at.cfg"  ), 
+              streams.value.log, "Extracting")
+    ),
     forge.mergedForgeBinary := {
       val log = streams.value.log
       cachedFile(forge.forgeDir.value / "forgeBin_srg.jar") { outFile => 
@@ -230,7 +227,10 @@ object ForgePlugin extends Plugin {
         Exceptor.addDefaultParameterNames(mergedBin)
 
         log.info("Running access transformers...")
-        // TODO
+        forge.accessTransformers.value.foreach { at =>
+          log.info("  - "+at.getName)
+          AccessTransformer.applyAccessTransformers(mergedBin, IO.readLines(at), log)
+        }
 
         log.info("Writing merged Forge binary to "+outFile)
         writeJarFile(mergedBin, new FileOutputStream(outFile))
