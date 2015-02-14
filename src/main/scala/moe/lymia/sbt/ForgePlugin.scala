@@ -303,7 +303,8 @@ object ForgePlugin extends Plugin {
       method.invoke(IvyActions, ivyModule.value, streams.value.log)
       Defaults.doClean(cleanFiles.value, cleanKeepFiles.value)
     },
-    cleanKeepFiles ++= (if(forge.cleanDlCache.value) Seq() else Seq(forge.dlCacheDir.value))
+    cleanKeepFiles ++= (if(forge.cleanDlCache.value) Seq() else Seq(forge.dlCacheDir.value)),
+    cleanFiles ++= (if(forge.cleanDlCache.value) Seq(forge.dlCacheDir.value, forge.cacheDir.value) else Seq(forge.cacheDir.value))
   )
   lazy val forgeSettings_1_7_10 = forgeSettingsBase ++ Seq(
     forge.mcVersion := "1.7.10",

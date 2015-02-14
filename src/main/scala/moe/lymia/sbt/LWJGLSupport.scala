@@ -144,7 +144,7 @@ object LWJGLSupport extends Plugin {
     lwjgl.copyDir <<= (target) (_ / "lwjgl-natives"),
 
     lwjgl.copyNatives <<= lwjglCopyTask,
-    resourceGenerators in Compile <+= lwjgl.copyNatives,
+    run <<= run dependsOn lwjgl.copyNatives,
 
     cleanFiles <+= lwjgl.copyDir,
 
