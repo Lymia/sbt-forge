@@ -3,81 +3,21 @@ package moe.lymia.sbt.forge
 import sbt._
 import asm._
 import mapping._
+import classpath._
 
-import java.io._
-import java.util.jar._
+import java.io.File
 
 import org.objectweb.asm._
 import org.objectweb.asm.Opcodes._
 import org.objectweb.asm.tree._
+import org.objectweb.asm.commons._
 
 import scala.collection.JavaConversions._
 import scala.collection.mutable
 import scala.collection.mutable.{HashMap, MultiMap}
 
 object Renamer {
-  def isSystemClass(name: String) = 
-    try {
-      ClassLoader.getSystemClassLoader().loadClass(name.replace("/", "."))
-      true
-    } catch {
-      case _: Throwable => false
-    }
-
-  val classFileRegex = "([^.]+)\\.class".r
-  private def findClassesInDirectory(path: String, file: File): Seq[(String, File)] = 
-    if(file.isDirectory) {
-      file.listFiles.flatMap { f =>
-        val npath = (if(path == "") f.getName else path+"/"+f.getName)
-        findClassesInDirectory(npath, f)
-      }
-    } else path match {
-      case classFileRegex(name) => Seq((name, file))
-      case _ => Seq()
-    }
-  class ClasspathSearcher(targetJar: JarData, classPath: Seq[File], log: Logger) {
-    private val classCache    = new HashMap[String, ClassNodeWrapper]
-    private val classSources  = new HashMap[String, () => Array[Byte]]
-    private val classLocation = new HashMap[String, File]
-    def resolve(name: String): Option[ClassNodeWrapper] = 
-      targetJar.classes.get(name) orElse classCache.get(name) orElse classSources.get(name).map { x =>
-        val cr = new ClassReader(new ByteArrayInputStream(x()))
-        val cn = new ClassNode()
-        cr.accept(cn, ClassReader.EXPAND_FRAMES)
-        val cw = new ClassNodeWrapper(cn, noCopy = true)
-        classCache.put(name, cw)
-        cw
-      }
-    def classLocation(name: String): String = 
-      targetJar.classes.get(name).map(_ => "<target jar>") orElse
-      classLocation.get(name).map(_.getName) getOrElse
-      (if(isSystemClass(name)) "<system classloader>" else "<unknown>")
-
-    for(path <- classPath) {
-      log.debug("Indexing classes in "+path)
-      if(path.isDirectory)
-        for((name, file) <- findClassesInDirectory("", path))
-          if(targetJar.classes.contains(name)) log.warn(path+" defines class "+name+" already defined in target jar!")
-          else if(!classSources.contains(name)) {
-            classSources.put(name, () => IO.readBytes(file))
-            classLocation.put(name, path)
-          } else log.warn(path+" defines class "+name+" already defined in "+classSources(name)+"!")
-      else {
-        val jarFile = new JarFile(path)
-        for(entry <- jarFile.entries()) entry.getName match {
-          case classFileRegex(name) =>
-            if(targetJar.classes.contains(name)) log.warn(path+" defines class "+name+" already defined in target jar!")
-            else if(!classSources.contains(name)) {
-              classSources.put(name, () => IO.readBytes(new URL("jar:"+path.toURI.toURL+"!/"+entry.getName).openStream()))
-              classLocation.put(name, path)
-            } else log.warn(path+" defines class "+name+" already defined in "+classSources(name)+"!")
-          case _ =>
-        }
-        jarFile.close()
-      }
-    }
-  }
-
+  // Fix mapping to include inner classes included with Forge
   val splitNameRegex = """^(.*)\$([^$]+)$""".r
   def findRemappableInnerClass(targetClasses: mutable.Map[String, ClassNodeWrapper], mapping: ForgeMapping, log: Logger) {
     for((name, cn) <- targetClasses   if  mapping.classMapping.contains(name);
@@ -89,54 +29,79 @@ object Renamer {
     }
   }
 
-  def buildSuperclassMap(seeds: Seq[String], searcher: ClasspathSearcher, log: Logger) = {
-    val map = new HashMap[String, Option[Set[String]]]
-    def recurseClass(name: String): Option[Set[String]] = map.get(name) match {
-      case Some(x) => x
-      case None =>
-        searcher.resolve(name) match {
-          case Some(node) =>
-            val seq = Some(Set(node.superName) ++ node.interfaces ++
-                           recurseClass(node.superName).getOrElse(Set()) ++ 
-                           (node.interfaces map (recurseClass _) flatMap (_.getOrElse(Set()))))
-            map.put(name, seq)
-            seq
-          case None => 
-            if(!isSystemClass(name)) log.warn("Could not resolve class "+name+"!")
-            None
-        }
-    }
-    for(name <- seeds) recurseClass(name)
-    map.flatMap(x => x._2.map(v => Map(x._1 -> v)).getOrElse(Map())).toMap
+  // Map parameter names from MCP configs
+  def mapParams(targetJar: JarData, params: Seq[String]) {
+    val paramMapping = readCsvMappings(params)
+    for((_, cn) <- targetJar.classes;
+        mn      <- cn.methods if mn.localVariables != null;
+        lvn     <- mn.localVariables;
+        target  <- paramMapping.get(lvn.name))
+      lvn.name = target
   }
+
+  // Method/Field resolver
+  class InheritenceResolver(searcher: ClasspathSearcher) {
+    private def canOverrideFrom(owner: String, caller: String, access: Int) = 
+      (access & (ACC_PRIVATE | ACC_PROTECTED | ACC_PUBLIC)) match {
+        case ACC_PUBLIC | ACC_PROTECTED => true
+        case 0                          => splitClassName(owner)._1 == splitClassName(caller)._1
+        case ACC_PRIVATE                => false
+        case _ => sys.error("Illegal access modifier in "+owner+"!")
+      }
+    private def checkOverrides(sub: String, sup: String, mn: MethodName) = 
+      searcher.resolve(sup).map(cn =>
+        // TODO: Cut inheritence chain if canOverrideFrom fails
+        (if(cn.methodMap.contains(mn) && canOverrideFrom(sup, sub, cn.methodMap(mn).access)) Set(sup) 
+         else Set()) ++ getOverrides(MethodSpec(sup, mn.name, mn.desc))
+      ).getOrElse(Set())
+    val getOverrides: MethodSpec => Set[String] = cacheFunction { ms =>
+      searcher.resolve(ms.owner).map(cn =>
+        checkOverrides(ms.owner, cn.superName, MethodName(ms.name, ms.desc)) ++
+        cn.interfaces.flatMap(i => checkOverrides(ms.owner, i, MethodName(ms.name, ms.desc)))
+      ).getOrElse(Set())
+    }
+    def overrides(caller: String, owner: String, name: String, desc: String) =
+      getOverrides(MethodSpec(caller, name, desc)).contains(owner)
+    def isRelated(caller: String, owner: String, name: String, desc: String) =
+      overrides(caller, owner, name, desc) || overrides(owner, caller, name, desc)
+
+    val resolveField: FieldSpec => Option[FieldSpec] = cacheFunction { fs =>
+      searcher.resolve(fs.owner).flatMap { cn =>
+        if(cn.fieldMap.contains(FieldName(fs.name, fs.desc))) Some(fs)
+        else cn.interfaces.map(x => resolveField(FieldSpec(x, fs.name, fs.desc))).find(!_.isEmpty).flatten orElse
+             resolveField(FieldSpec(cn.superName, fs.name, fs.desc))
+      }
+    }
+    val resolveMethod: MethodSpec => Option[MethodSpec] = cacheFunction { ms =>
+      searcher.resolve(ms.owner).flatMap { cn =>
+        if(cn.methodMap.contains(MethodName(ms.name, ms.desc))) Some(ms)
+        else resolveMethod(MethodSpec(cn.superName, ms.name, ms.desc)) orElse 
+             cn.interfaces.map(x => resolveMethod(MethodSpec(x, ms.name, ms.desc))).find(!_.isEmpty).flatten
+      }
+    }
+  }
+
+  // Mapping extension code
   def findRenamingCandidates(searcher: ClasspathSearcher, mapping: ForgeMapping,
                              classList: Seq[String], log: Logger) = {
-    val couldRename = mapping.methodMapping.keys.map(x => MethodName(x.name, x.desc)).toSet    
-    val renameCandidates = new HashMap[MethodName, mutable.Set[String]] with MultiMap[MethodName, String]
-    for(name <- classList) {
-      val cn = searcher.resolve(name) getOrElse sys.error("Class "+name+" disappeared??")
-      for((name, mn) <- cn.methodMap)
-        if(couldRename.contains(name))
+    val couldRename = mapping.methodMapping.keys.map(x => MethodName(x.name, x.desc)).toSet
+    val candidates = new HashMap[MethodName, mutable.Set[String]] with MultiMap[MethodName, String]
+    for(name <- classList) searcher.resolve(name) match {
+      case Some(cn) =>
+        for((name, mn) <- cn.methodMap if couldRename.contains(MethodName(mn.name, mn.desc)))
           if((mn.access & ACC_STATIC) != ACC_STATIC && (mn.access & ACC_PRIVATE) != ACC_PRIVATE)
-            renameCandidates.addBinding(name, cn.name)
-          else log.debug("Method "+cn.name+"."+name.name+name.desc+" is private or static, and will not be "+
-                         "considered for propergation.")
+            candidates.addBinding(MethodName(mn.name, mn.desc), cn.name)
+      case None => sys.error("Class "+name+" not found while searching for rename candidates.")
     }
-    renameCandidates.toMap.mapValues(_.toSet)
+    candidates.toMap.mapValues(_.toSet)
   }
-  private def prettySeq[T](s: Seq[T]) = 
+  private def prettySeq[T](s: Iterable[T]) = 
     if(s.size == 0) "<nothing>"
-    else if(s.length == 1) s.head.toString
+    else if(s.tail.isEmpty) s.head.toString
     else "["+s.map(_.toString).reduce(_ + "," + _)+"]"
-  private def prettySeq[T](s: Set[T]): String =
-    prettySeq(s.toSeq)
   def buildEquivalenceSets(methodName: String, methodDesc: String, candidates: Set[String], 
-                           superclassMap: Map[String, Set[String]],
-                           mapping      : ForgeMapping, log: Logger) = {
-    def isSuperclass(name: String, target: String) = superclassMap(name).contains(target)
-    def isSubclass  (name: String, target: String) = superclassMap(target).contains(name)
+                           inheritence: InheritenceResolver, mapping: ForgeMapping, log: Logger) = {
     def resolve     (name: String) = mapping.methodMapping.get(MethodSpec(name, methodName, methodDesc))
-
     val (mapped, nonMapped) = candidates.partition(x => !resolve(x).isEmpty)
     val equivalenceMap = new HashMap[String, mutable.Set[String]] with MultiMap[String, String]
     for(name <- mapped) equivalenceMap.addBinding(resolve(name).get, name)
@@ -158,9 +123,9 @@ object Renamer {
       left.map(_._1)
     }
 
-    val noDirectMapping = mappingStep(nonMapped.toSeq, isSubclass)
+    val noDirectMapping = mappingStep(nonMapped.toSeq, (a, b) => inheritence.overrides(b, a, methodName, methodDesc))
     @annotation.tailrec def mapRecursive(candidates: Seq[String]): Seq[String] = {
-      val remaining = mappingStep(candidates, (a, b) => isSuperclass(a, b) || isSubclass(a, b))
+      val remaining = mappingStep(candidates, (a, b) => inheritence.isRelated(a, b, methodName, methodDesc))
       if(remaining == candidates || remaining.length == 0) remaining
       else mapRecursive(remaining)
     }
@@ -168,22 +133,21 @@ object Renamer {
 
     (nonMapped.toSet, remaining.toSet, noDirectMapping.toSet, equivalenceMap.toMap.mapValues(_.toSet))
   }
-  def applyMapping(targetJar: JarData, classPath: Seq[File], imapping: ForgeMapping, log: Logger) = {
+  def applyMapping(targetJar: JarData, searchPath: Seq[File], dependencies: Seq[File], imapping: ForgeMapping, log: Logger) = {
     val mapping = imapping.clone()
 
-    log.info("Indexing dependency jars...")
-    val searcher = new ClasspathSearcher(targetJar, classPath, log)
+    log.info("Building class graph...")
+    val searcher    = new ClasspathSearcher(targetJar, searchPath ++ dependencies, log)
+    val inheritence = new InheritenceResolver(searcher)
 
-    log.info("Building super/subclass maps...")
-    val superclassMap    = buildSuperclassMap(targetJar.classes.keys.toSeq, searcher, log)
-
-    log.info("Propergating mapping...")
-    val renameCandidates = findRenamingCandidates(searcher, mapping, superclassMap.keys.toSeq, log)
+    log.info("Propergating method mapping...")
+    val seeds = targetJar.classes.keys.toSeq ++ searchPath.flatMap(x => searcher.sourceContents(x).getOrElse(sys.error("Source "+x+" not found in classpath??")))
+    val renameCandidates = findRenamingCandidates(searcher, mapping, seeds, log)
     var givenIndirectMappingLecture = false
     renameCandidates.foreach { t =>
       val (MethodName(name, desc), candidates) = t
       val (noMapping, remaining, noDirectMapping, equivalenceMap) = 
-        buildEquivalenceSets(name, desc, candidates, superclassMap, mapping, log) 
+        buildEquivalenceSets(name, desc, candidates, inheritence, mapping, log) 
       if(remaining.size > 0)
         log.debug("Classes "+prettySeq(remaining)+" contain an method "+name+desc+", but, no relationship to remapped methods was found.")
       for((target, classes) <- equivalenceMap) {
@@ -216,24 +180,25 @@ object Renamer {
         }
 
         if(directClasses.size > 0)
-          log.debug("Propergating remapping "+name+desc+" -> "+target+" from "+prettySeq(directClasses)+" to "+prettySeq(directClasses)+".")
+          log.debug("Propergating remapping "+name+desc+" -> "+target+" from "+prettySeq(sourceClasses)+" to "+prettySeq(directClasses)+".")
         if(indirectClasses.size > 0)
-          log.debug("Indirectly propergating remapping "+name+desc+" -> "+target+" from "+prettySeq(directClasses)+" to "+prettySeq(indirectClasses)+".")
+          log.debug("Indirectly propergating remapping "+name+desc+" -> "+target+" from "+prettySeq(sourceClasses)+" to "+prettySeq(indirectClasses)+".")
 
         for(n <- newMappings) mapping.methodMapping.put(MethodSpec(n, name, desc), target)
       }
     }
 
     log.info("Mapping classes...")
-    targetJar.mapWithVisitor(mapping.visitor _)
-  }
-
-  def mapParams(targetJar: JarData, params: Seq[String]) {
-    val paramMapping = readCsvMappings(params)
-    for((_, cn) <- targetJar.classes;
-        mn      <- cn.methods if mn.localVariables != null;
-        lvn     <- mn.localVariables;
-        target  <- paramMapping.get(lvn.name))
-      lvn.name = target
+    val mapper = new Remapper() {
+      override def map(name: String) = mapping.map(name)
+      override def mapFieldName(owner: String, name: String, desc: String) = 
+        inheritence.resolveField(FieldSpec(owner, name, desc)).flatMap(fs => mapping.fieldMapping.get(fs)).getOrElse(name)
+      override def mapMethodName(owner: String, name: String, desc: String) =
+        if(owner.startsWith("[")) name
+        else inheritence.resolveMethod(MethodSpec(owner, name, desc)).flatMap(ms => mapping.methodMapping.get(ms)).getOrElse(name)
+      override def mapInvokeDynamicMethodName(name: String, desc: String) =
+        sys.error("Uh, you know that you're supposed to write mods targeting Java 6, right?")
+    }
+    (mapping, targetJar.mapWithVisitor(cv => new RemappingClassAdapter(cv, mapper)))
   }
 }

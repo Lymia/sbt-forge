@@ -15,15 +15,20 @@ import scala.collection.mutable.ArrayBuffer
 import asm._
 
 object Merger {
-  private def markSideOnly(c: AnnotationContainer, side: String): Unit = {
-    if(!c.visibleAnnotations.exists(_.desc == "Lcpw/mods/fml/relauncher/SideOnly;")){
-      val an = new AnnotationNode("Lcpw/mods/fml/relauncher/SideOnly;")
-      an.visitEnum("value", "Lcpw/mods/fml/relauncher/Side;", side)
+  private def markSideOnly(c: AnnotationContainer, side: String, classesMoved: Boolean): Unit = {
+    val pkg = if(classesMoved) "net/minecraftforge/fml/relauncher" else "cpw/mods/fml/relauncher"
+    if(!c.visibleAnnotations.exists(_.desc == "L"+pkg+"/SideOnly;")){
+      val an = new AnnotationNode("L"+pkg+"/SideOnly;")
+      an.visitEnum("value", "L"+pkg+"/Side;", side)
       c.visibleAnnotations += an
     }
   }
 
-  def merge(client: JarData, server: JarData, config: Seq[String], log: Logger) = {
+  def forgeGradleMerge(client: File, server: File, outJar: File, config: InputStream, classesMoved: Boolean) {
+    new ForgeGradleMergeJars().mergeJars(client, server, outJar, config, classesMoved)
+  }
+
+  def merge(client: JarData, server: JarData, config: Seq[String], log: Logger, classesMoved: Boolean) = {
     val dontAnnotate = config.filter(_.startsWith("!")).map(_.substring(1)).toSet
     val exclude      = config.filter(_.startsWith("^")).map(_.substring(1))
     // copyToServer and copyToClient do nothing in ForgeGradle. Just ignore them for now.
@@ -39,7 +44,7 @@ object Merger {
 
     for((name, cn) <- client.classes) if(!isExcluded(name)) {
       val ncn = cn.clone()
-      if(!dontAnnotate.contains(name)) if(!server.classes.contains(name)) markSideOnly(ncn, "CLIENT")
+      if(!dontAnnotate.contains(name)) if(!server.classes.contains(name)) markSideOnly(ncn, "CLIENT", classesMoved)
       target.classes.put(name, ncn)
     }
     for((name, serverClass) <- server.classes) if(!isExcluded(name)) {
@@ -47,24 +52,24 @@ object Merger {
         case Some(clientClass) =>
           // diff fields
           for(t <- clientClass.fieldMap.keySet -- serverClass.fieldMap.keySet)
-            markSideOnly(clientClass.fieldMap(t), "CLIENT")
+            markSideOnly(clientClass.fieldMap(t), "CLIENT", classesMoved)
           for(t <- serverClass.fieldMap.keySet -- clientClass.fieldMap.keySet) {
             val field = serverClass.fieldMap(t)
-            markSideOnly(field, "SERVER")
+            markSideOnly(field, "SERVER", classesMoved)
             clientClass.addField(field)
           }
 
           // diff methods
           for(t <- clientClass.methodMap.keySet -- serverClass.methodMap.keySet)
-            markSideOnly(clientClass.methodMap(t), "CLIENT")
+            markSideOnly(clientClass.methodMap(t), "CLIENT", classesMoved)
           for(t <- serverClass.methodMap.keySet -- clientClass.methodMap.keySet) {
             val method = serverClass.methodMap(t)
-            markSideOnly(method, "SERVER")
+            markSideOnly(method, "SERVER", classesMoved)
             clientClass.addMethod(method)
           }
         case None =>
           val ncn = serverClass.clone()
-          if(!dontAnnotate.contains(name)) markSideOnly(ncn, "SERVER")
+          if(!dontAnnotate.contains(name)) markSideOnly(ncn, "SERVER", classesMoved)
           target.classes.put(name, ncn)
       }
     }

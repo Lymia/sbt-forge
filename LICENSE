@@ -20,7 +20,9 @@ SOFTWARE.
 
 -------------------------------------------------------------------------------
 
-Uses code from sbt-lwjgl-plugin, available under the following license:
+LWJGLPlugin.scala is based off code from sbt-lwjgl-plugin, available under the
+following license:
+
 
 Copyright (c) 2011 Philip Cali 
 
@@ -41,3 +43,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+Some code in ForgePlugin.scala is based off TressMod's build.scala. TressMod is
+available under the following license:
+
+
+The software in this package is distributed under the GNU General Public
+License (with a special exception described below).
+
+A copy of GNU General Public License (GPL) is included in this distribution,
+in the file COPYING.  If you do not have the source code, it is available at:
+
+  https://github.com/RainWarrior/TrussMod
+
+Additional permission/restrictions under GNU GPL version 3 section 7
+
+If you modify this Program, or any covered work, by linking or combining it
+with Minecraft and/or MinecraftForge (or a modified version of Minecraft
+and/or Minecraft Forge), containing parts covered by the terms of
+Minecraft Terms of Use and/or Minecraft Forge Public Licence, the licensors
+of this Program grant you additional permission to convey the resulting work.
+
+Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original software.
+
+Neither the name of 'TrussMod' nor the names of
+its contributors may be used to endorse or promote products derived
+from this software without specific prior written permission.
+
+-------------------------------------------------------------------------------
+
+ForgeGradleMergeJars.java is based off ForgeGradle. ForgeGradle is available
+under the terms of the LGPL v2.1

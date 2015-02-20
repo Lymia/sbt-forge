@@ -30,7 +30,7 @@ object Exceptor {
             val icn = new InnerClassNode((l \ "inner_class").as[String],
                                          (l \ "outer_class").asOpt[String].getOrElse(null),
                                          (l \ "inner_name").asOpt[String].getOrElse(null),
-                                         (l \ "access").asOpt[String].map(_.toInt).getOrElse(0))
+                                         (l \ "access").asOpt[String].map(x => Integer.parseInt(x, 16)).getOrElse(0))
             cn.innerClasses += icn
           }}
         case None => log.warn("Exceptor contains inner class definitions for class "+name+
@@ -96,7 +96,7 @@ object Exceptor {
         getMethod(className, methodName, desc) match {
           case Some(mn) =>
             val funcValueRegex(exceptionString, parameters) = value
-            if(exceptionString != "") mn.exceptions ++= exceptionString.split(",")
+            if(exceptionString != "") mn.exceptions ++= exceptionString.split(",").map(_.replace(".", "/"))
             if(parameters != "") addParameters(className, mn, parameters.split(","))
           case None => log.warn("Exceptor definition defines exception information for "+className+"."+methodName+desc+
                                 ", but method was not found in input jar.")
@@ -115,6 +115,13 @@ object Exceptor {
           addParameters(clname, mn, (0 until paramCount).map(n => "p_"+id+"_"+(n+paramStart)+"_"))
         }
       case _ =>
+    }
+  }
+
+  def stripSynthetic(inputJar: JarData) {
+    for((_, cn) <- inputJar.classes) if(cn.superName != "java/lang/Enum") {
+      for(mn <- cn.methods) mn.access = mn.access & ~ACC_SYNTHETIC
+      for(fn <- cn.fields ) fn.access = fn.access & ~ACC_SYNTHETIC
     }
   }
 }

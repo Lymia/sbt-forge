@@ -24,6 +24,8 @@ libraryDependencies += "com.nothome" % "javaxdelta" % "2.0.1"
 
 libraryDependencies += "com.typesafe.play" %% "play-json" % "2.3.4"
 
+libraryDependencies += "com.google.guava" % "guava" % "18.0"
+
 scalacOptions ++= Seq("-Xlint", "-feature")
 
 pomExtra := (

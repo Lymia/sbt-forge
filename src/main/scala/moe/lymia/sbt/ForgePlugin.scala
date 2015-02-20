@@ -26,15 +26,26 @@ object ForgePlugin extends Plugin {
     val mappings     = SettingKey[String]("forge-mappings",
       "Mapping from SRG names to MCP names to use")
 
+    val isRenamed    = SettingKey[Boolean]("forge-is-renamed",
+      "Used by merger. True if cpw.mods.fml.relauncher has been moved to net.minecraftforge.fml.relauncher")
+
     val cacheDir     = SettingKey[File]("forge-cache-dir",
       "Directory used to store files used by sbt-forge")
     val forgeDir     = SettingKey[File]("forge-forge-dir",
       "Directory used to store files specific to a forge version")
     val dlCacheDir   = SettingKey[File]("forge-minecraft-dir",
       "Directory used to store files specific to a Minecraft version")
+    val runDir       = SettingKey[File]("forge-run-dir",
+      "Directory used at runtime by Minecraft")
 
     val cleanDlCache = SettingKey[Boolean]("forge-clean-download-cache",
       "If set, sbt clean will erase the Download cache directory and force a redownload")
+
+    // Debug keys
+    val debugDir          = SettingKey[File]("forge-debug-dir",
+      "Directory used to store debug files dumped by sbt-forge")
+    val debugDumpMappings = SettingKey[Boolean]("forge-debug-dump-mappings",
+      "If set, sbt-forge will dump the temporary mappings used to actually remap .jar files")
 
     // URL locations
     val clientDownloadUrl    = TaskKey[String]("forge-client-download-url",
@@ -65,8 +76,7 @@ object ForgePlugin extends Plugin {
       "Location of the .json file declaring Minecraft's dependencies. "+
       "By default, extracts dev.json from the userdev archive")
     val binpatches       = TaskKey[File]("forge-binpatches",
-      "Binary patches to patch server and client jars with. "+
-      "By default, extracts Forge's patches from the universal binary")
+      "Binary patches to patch Minecraft classes with.")
     val mergeConfig      = TaskKey[File]("forge-merge-config",
       "Configuration for merging the client and server jars. "+
       "By default, extracts Forge's merge configuration from the userdev archive")
@@ -91,8 +101,10 @@ object ForgePlugin extends Plugin {
       "Applies Forge's patches to the Minecraft server binary")
     val patchClientJar = TaskKey[File]("forge-patch-client-jar",
       "Applies Forge's patches to the Minecraft client binary")
-    val mergeJars      = TaskKey[File]("forge-merge-jars",
-      "Merges the Minecraft client and server binaries")
+    val fgMergeJars    = TaskKey[File]("forge-fg-merge-jars",
+      "Merges the Minecraft client and server binaries, using ForgeGradle's merger code")
+    val mergedJar      = TaskKey[File]("forge-merge-jars",
+      "Merged and patched Minecraft binary")
 
     // Deobf merged .jar to SRG names
     val accessTransformers = TaskKey[Seq[File]]("forge-access-transformers",
@@ -101,10 +113,18 @@ object ForgePlugin extends Plugin {
       "Deobfs and merges the Minecraft binary and the Minecraft Forge binary to SRG names")
 
     // Remap .jar files from SRG names to MCP names
-    val mappingSrg  = TaskKey[File]("forge-mapping-srg",
-      ".srg file generated from mapping")
-    val forgeBinary = TaskKey[File]("forge-binary",
+    val mappingCache = TaskKey[File]("forge-mapping-cache",
+      "Cached mapping generated from .csv files")
+    val forgeBinary  = TaskKey[File]("forge-binary",
       "Forge binary remapped to MCP names")
+
+    // Run Minecraft
+    val runOptions    = TaskKey[ForkOptions]("forge-run-options",
+      "Fork options for running Minecraft")
+    val prepareRunDir = TaskKey[Unit]("forge-prepare-run-dir",
+      "Prepares the run directory for Minecraft.")
+    val runClient     = InputKey[Unit]("run-client", "Runs the Minecraft client.")
+    val runServer     = InputKey[Unit]("run-server", "Runs the Minecraft server")
   }
 
   object forgeHelpers {
@@ -116,14 +136,13 @@ object ForgePlugin extends Plugin {
 
     def copyUrl(target: File, source: String, log: Logger, verb: String) = {
       if(!target.exists) {
-        if(!target.getParentFile.exists)
-          if(!target.getParentFile.mkdirs())
-            sys.error("Failed to create parent directory of "+target)
+        forgeHelpers synchronized {
+          if(!target.getParentFile.exists)
+            if(!target.getParentFile.mkdirs())
+              sys.error("Failed to create parent directory of "+target)
+        }
         log.info(verb+" "+source+" to "+target+"...")
-        new URL(source) #> target !!;
-        log.info("Done "+verb.toLowerCase+" "+source+".")
-      } else {
-        log.info(target+" already exists, skipping.")
+        new URL(source) #> target !!
       }
       target
     }
@@ -133,7 +152,13 @@ object ForgePlugin extends Plugin {
 
     // TODO: Add dependency checking
     def cachedFile[T](outFile: File)(task: File => T) = {
-      if(!outFile.exists) task(outFile)
+      if(!outFile.exists) try {
+        task(outFile)
+      } catch {
+        case t: Throwable =>
+          if(outFile.exists) outFile.delete()
+          throw t
+      }
       outFile
     }
     def patchJarTask(task: TaskKey[File],
@@ -154,6 +179,11 @@ object ForgePlugin extends Plugin {
       case mappingRegex(channel, version) => (channel, version)
       case _ => sys.error("Could not parse mapping channel name: "+s)
     }
+
+    def dumpDebugMapping(debugDir: File, map: ForgeMapping, name: String) = {
+      if(!debugDir.exists) debugDir.mkdirs()
+      dumpMapping(new FileOutputStream(debugDir / name), map)
+    }
   }
   import forgeHelpers._
 
@@ -163,8 +193,12 @@ object ForgePlugin extends Plugin {
     forge.cacheDir   := target.value / "sbt-forge-cache",
     forge.forgeDir   := forge.cacheDir.value / ("forge-"+forge.fullVersion.value),
     forge.dlCacheDir := target.value / "sbt-forge-dlcache",
+    forge.runDir     := baseDirectory.value / "run",
 
     forge.cleanDlCache := false,
+
+    forge.debugDir          := forge.cacheDir.value / "debug",
+    forge.debugDumpMappings := false,
 
     // Download needed files
     forge.clientDownloadUrl    <<= forge.mcVersion map (ver => 
@@ -186,7 +220,6 @@ object ForgePlugin extends Plugin {
     downloadTask(forge.mappingArchive, forge.mappings   , forge.mappingDownloadUrl  , "mcp_mappings"    , ".zip"),
 
     // Extract files used in later processes
-    extractTask(forge.binpatches      , forge.universalJar  , "binpatches.pack.lzma", "binpatches.pack.lzma", forge.forgeDir),
     extractTask(forge.mergeConfig     , forge.userdevArchive, "conf/mcp_merge.cfg"  , "mcp_merge.cfg"       , forge.forgeDir),
     extractTask(forge.srgFile         , forge.userdevArchive, "conf/packaged.srg"   , "packaged.srg"        , forge.forgeDir),
     extractTask(forge.exceptorJson    , forge.userdevArchive, "conf/exceptor.json"  , "exceptor.json"       , forge.forgeDir),
@@ -199,7 +232,6 @@ object ForgePlugin extends Plugin {
     resolvers += Resolver.sonatypeRepo("releases"),
     resolvers += Resolver.sonatypeRepo("snapshots"),
 
-    forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.plugins", "org.lwjgl.lwjgl"),
     forge.loadDependenciesFromJson :=
       (Json.parse(IO.read(forge.dependenciesJson.value)) \ "libraries").as[Seq[JsObject]].map { elem =>
         val Array(org, project, version) = (elem \ "name").as[String].split(":")
@@ -209,19 +241,6 @@ object ForgePlugin extends Plugin {
     allDependencies <++= forge.loadDependenciesFromJson,
 
     // Process jars to merged SRG Forge binary
-    patchJarTask(forge.patchClientJar, forge.clientJar     , "minecraft_client_patched.jar", "client"),
-    patchJarTask(forge.patchServerJar, forge.serverJar     , "minecraft_server_patched.jar", "server"),
-    forge.mergeJars := {
-      val log = streams.value.log
-      cachedFile(forge.forgeDir.value / "minecraft_merged.jar") { outFile =>
-        log.info("Merging client and server binaries to "+outFile)
-        writeJarFile(Merger.merge(
-          loadJarFile(new FileInputStream(forge.patchClientJar.value)),
-          loadJarFile(new FileInputStream(forge.patchServerJar.value)),
-          IO.readLines(forge.mergeConfig.value), log
-        ), new FileOutputStream(outFile))
-      }
-    },
     forge.accessTransformers := Seq(
       copyUrl(forge.forgeDir.value / "forge_at.cfg", jarFileUrl(forge.userdevArchive.value, "src/main/resources/forge_at.cfg"), 
               streams.value.log, "Extracting"),
@@ -231,27 +250,36 @@ object ForgePlugin extends Plugin {
     forge.mergedForgeBinary := {
       val log = streams.value.log
       cachedFile(forge.forgeDir.value / "forgeBin_srg.jar") { outFile => 
-        val classpath = (dependencyClasspath in Compile).value.map(_.data)
-        val minecraftNotch = loadJarFile(new FileInputStream(forge.mergeJars.value))
+        val classpath = (managedClasspath in Compile).value.map(_.data)
+        val minecraftNotch = loadJarFile(new FileInputStream(forge.mergedJar.value))
         val forgeNotch = loadJarFile(new FileInputStream(forge.universalJar.value))
-        val map = readMappingFromSrg(new FileInputStream(forge.srgFile.value))
+        val map = mappingFromSrgFile(minecraftNotch, IO.readLines(forge.srgFile.value), log)
 
         log.info("Adding mappings for Minecraft Forge inner classes")
         Renamer.findRemappableInnerClass(minecraftNotch.classes ++ forgeNotch.classes, map, log)
 
         log.info("Deobfing merged Minecraft binary to SRG names...")
-        val minecraftSrg = Renamer.applyMapping(minecraftNotch, classpath :+ forge.universalJar.value, map, log)
+        val (tmpmap_mc   , minecraftSrg) = Renamer.applyMapping(minecraftNotch, Seq(forge.universalJar.value), classpath, map, log)
+        if(forge.debugDumpMappings.value) dumpDebugMapping(forge.debugDir.value, tmpmap_mc, "tmpmap_mc.sfmap")
+
         log.info("Restoring class attributes...")
         Exceptor.applyExceptorJson(minecraftSrg, IO.read(forge.exceptorJson.value), log)
         Exceptor.applyExcFile(minecraftSrg, new FileInputStream(forge.excFile.value), log)
 
         log.info("Deobfing Forge binary to SRG names...")
-        val forgeSrg = Renamer.applyMapping(forgeNotch, classpath :+ forge.mergeJars.value, map, log)
+        val (tmpmap_forge, forgeSrg) = Renamer.applyMapping(forgeNotch, Seq(forge.mergedJar.value), classpath, map, log)
+        if(forge.debugDumpMappings.value) dumpDebugMapping(forge.debugDir.value, tmpmap_forge, "tmpmap_forge.sfmap")
 
         log.info("Merging Forge binary and Minecraft binary...")
         val mergedBin = Merger.addForgeClasses(minecraftSrg, forgeSrg, log)
+
         log.info("Adding SRG parameter names...")
         Exceptor.addDefaultParameterNames(mergedBin)
+        log.info("Stripping synthetic modifiers...")
+        Exceptor.stripSynthetic(mergedBin)
+
+        log.info("Removing patch data...")
+        mergedBin.resources.remove("binpatches.pack.lzma")
 
         log.info("Running access transformers...")
         forge.accessTransformers.value.foreach { at =>
@@ -264,9 +292,9 @@ object ForgePlugin extends Plugin {
       }
     },
 
-    forge.mappingSrg := {
+    forge.mappingCache := {
       val log = streams.value.log
-      cachedFile(forge.forgeDir.value / ("srg2mcp-"+forge.mappings.value+".srg")) { outFile => 
+      cachedFile(forge.forgeDir.value / ("srg2mcp-"+forge.mappings.value+".sfmap")) { outFile => 
         log.info("Generating "+outFile+"...")
         val fieldsFile  = IO.readLinesURL(new URL(jarFileUrl(forge.mappingArchive.value, "fields.csv" ))).tail
         val methodsFile = IO.readLinesURL(new URL(jarFileUrl(forge.mappingArchive.value, "methods.csv"))).tail
@@ -279,9 +307,10 @@ object ForgePlugin extends Plugin {
       val log = streams.value.log
       cachedFile(forge.forgeDir.value / ("forgeBin-"+forge.fullVersion.value+"-"+forge.mappings.value+".jar")) { outFile => 
         log.info("Deobfing Forge binary to MCP names at "+outFile)
-        val classpath = (dependencyClasspath in Compile).value.map(_.data)
-        val map = readMappingFromSrg(new FileInputStream(forge.mappingSrg.value))
-        val jar = Renamer.applyMapping(loadJarFile(new FileInputStream(forge.mergedForgeBinary.value)), classpath, map, log)
+        val classpath = (managedClasspath in Compile).value.map(_.data)
+        val map = readMapping(IO.readLines(forge.mappingCache.value))
+        val (tmpmap_mcp, jar) = Renamer.applyMapping(loadJarFile(new FileInputStream(forge.mergedForgeBinary.value)), Seq(), classpath, map, log)
+        if(forge.debugDumpMappings.value) dumpDebugMapping(forge.debugDir.value, tmpmap_mcp, "tmpmap_mcp.sfmap")
 
         log.info("Mapping parameter names...")
         val paramsFile = IO.readLinesURL(new URL(jarFileUrl(forge.mappingArchive.value, "params.csv"))).tail
@@ -291,6 +320,44 @@ object ForgePlugin extends Plugin {
       }
     },
     fullClasspath in Compile <+= forge.forgeBinary,
+
+    forge.runOptions := ForkOptions(
+      connectInput = true,
+      outputStrategy = Some(StdoutOutput),
+      runJVMOptions = javaOptions.value,
+      workingDirectory = Some(forge.runDir.value)
+    ),
+    forge.prepareRunDir := {
+      forge.runDir.value.mkdirs()
+    },
+    forge.runClient in Runtime := {
+      val runner = new ForkRun(forge.runOptions.value)
+      val params = (Json.parse(IO.read(forge.dependenciesJson.value)) \ "minecraftArguments").as[String].split(" ")
+      toError(runner.run(
+        "net.minecraft.launchwrapper.Launch",
+        (dependencyClasspath in Runtime).value.map(_.data) :+ forge.forgeBinary.value,
+        params ++ Seq(
+          "--username", "ForgeDevName",
+          "--accessToken", "FML",
+          "--assetsDir", (Path.userHome / ".minecraft/assets").getPath,
+          "--assetIndex", forge.mcVersion.value,
+          "--userProperties", "{}"
+        ),
+        streams.value.log
+      ))
+    },
+    forge.runServer in Runtime := {
+      val runner = new ForkRun(forge.runOptions.value)
+      toError(runner.run(
+        "cpw.mods.fml.relauncher.ServerLaunchWrapper",
+        (dependencyClasspath in Runtime).value.map(_.data) :+ forge.forgeBinary.value,
+        Seq(),
+        streams.value.log
+      ))
+    },
+
+    forge.runClient in Runtime <<= (forge.runClient in Runtime) dependsOn (forge.prepareRunDir, lwjgl.copyNatives),
+    forge.runServer in Runtime <<= (forge.runServer in Runtime) dependsOn (forge.prepareRunDir, lwjgl.copyNatives),
 
     clean := {
       // Clean the resolution cache before cleaning up files.
@@ -304,18 +371,54 @@ object ForgePlugin extends Plugin {
       Defaults.doClean(cleanFiles.value, cleanKeepFiles.value)
     },
     cleanKeepFiles ++= (if(forge.cleanDlCache.value) Seq() else Seq(forge.dlCacheDir.value)),
-    cleanFiles ++= (if(forge.cleanDlCache.value) Seq(forge.dlCacheDir.value, forge.cacheDir.value) else Seq(forge.cacheDir.value))
+    cleanFiles ++= (if(forge.cleanDlCache.value) Seq(forge.cacheDir.value, forge.runDir.value, forge.dlCacheDir.value) 
+                    else                         Seq(forge.cacheDir.value, forge.runDir.value))
   )
-  lazy val forgeSettings_1_7_10 = forgeSettingsBase ++ Seq(
+  lazy val internalMergeClasses = Seq(
+    extractTask(forge.binpatches, forge.universalJar, "binpatches.pack.lzma", "binpatches.pack.lzma", forge.forgeDir),
+    patchJarTask(forge.patchClientJar, forge.clientJar, "minecraft_client_patched.jar", "client"),
+    patchJarTask(forge.patchServerJar, forge.serverJar, "minecraft_server_patched.jar", "server"),
+    forge.mergedJar := {
+      val log = streams.value.log
+      cachedFile(forge.forgeDir.value / "minecraft_merged.jar") { outFile =>
+        log.info("Merging patched client and server binaries to "+outFile)
+        writeJarFile(Merger.merge(
+          loadJarFile(new FileInputStream(forge.patchClientJar.value)),
+          loadJarFile(new FileInputStream(forge.patchServerJar.value)),
+          IO.readLines(forge.mergeConfig.value), log, forge.isRenamed.value
+        ), new FileOutputStream(outFile))
+      }
+    }
+  )
+  lazy val forgeGradleMergeClasses = Seq(
+    extractTask(forge.binpatches, forge.userdevArchive, "devbinpatches.pack.lzma", "devbinpatches.pack.lzma", forge.forgeDir),
+    forge.fgMergeJars := {
+      val log = streams.value.log
+      cachedFile(forge.forgeDir.value / "minecraft_merged_fg.jar") { outFile =>
+        log.info("Merging client and server binaries to "+outFile)
+        Merger.forgeGradleMerge(forge.clientJar.value, forge.serverJar.value,
+                                outFile, new FileInputStream(forge.mergeConfig.value),
+                                forge.isRenamed.value)
+      }
+    },
+    patchJarTask(forge.mergedJar, forge.fgMergeJars, "minecraft_merged.jar", "merged")
+  )
+  lazy val forgeSettings_1_7_10 = forgeSettingsBase ++ forgeGradleMergeClasses ++ Seq(
     forge.mcVersion := "1.7.10",
     forge.version   := "10.13.2.1291",
     forge.mappings  := "stable-12",
-    scalaVersion    := "2.11.1"
+    scalaVersion    := "2.11.1",
+    forge.isRenamed := false,
+
+    forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.plugins", "org.lwjgl.lwjgl")
   )
-  lazy val forgeSettings_1_8 = forgeSettingsBase ++ Seq(
+  lazy val forgeSettings_1_8 = forgeSettingsBase ++ forgeGradleMergeClasses ++ Seq(
     forge.mcVersion := "1.8",
     forge.version   := "11.14.0.1299",
     forge.mappings  := "stable-16",
-    scalaVersion    := "2.11.1"
+    scalaVersion    := "2.11.1",
+    forge.isRenamed := true,
+
+    forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.plugins", "org.lwjgl.lwjgl")
   )
 }

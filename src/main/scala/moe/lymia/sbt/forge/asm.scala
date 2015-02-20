@@ -8,6 +8,7 @@ import java.util.jar._
 
 import org.objectweb.asm._
 import org.objectweb.asm.Opcodes._
+import org.objectweb.asm.util._
 import org.objectweb.asm.tree._
 
 import scala.collection.JavaConversions._
@@ -16,6 +17,7 @@ import scala.collection.mutable.{HashMap, ArrayBuffer}
 import language._
 
 object asm {
+  // TODO: Make method name/method desc easier to work with
   case class MethodName(name: String, desc: String)
   case class FieldName (name: String, desc: String)
   private class MapWrapperSeq[A, B](map: collection.mutable.Map[A, B]) extends Seq[B] {
@@ -49,6 +51,16 @@ object asm {
     def invisibleAnnotations = {
       if(fn.invisibleAnnotations == null) fn.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
       fn.invisibleAnnotations
+    }
+  }
+  implicit class RichClassNode(cn: ClassNode) extends AnnotationContainer {
+    def visibleAnnotations = {
+      if(cn.visibleAnnotations == null) cn.visibleAnnotations = new ArrayBuffer[AnnotationNode]
+      cn.visibleAnnotations
+    }
+    def invisibleAnnotations = {
+      if(cn.invisibleAnnotations == null) cn.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
+      cn.invisibleAnnotations
     }
   }
   class ClassNodeWrapper(private var inNode: ClassNode = null,
@@ -114,15 +126,24 @@ object asm {
                   }).syncClassNames
     override def clone() = new JarData(resources.clone(), classes.clone())
   }
+  def readClassNode(in: InputStream) = {
+    val cr = new ClassReader(in)
+    val cn = new ClassNode()
+    cr.accept(cn, ClassReader.EXPAND_FRAMES)
+    cn
+  }
+  def dumpClassNode(cn: ClassNode) = {
+    val cw = new ClassWriter(ClassWriter.COMPUTE_MAXS)
+    cn.accept(cw)
+    cw.toByteArray
+  }
   def loadJarFile(in: InputStream) = {
     val jarData = new JarData()
     var entry: JarEntry = null
     val jin = new JarInputStream(in, false)
     while({entry = jin.getNextJarEntry; entry != null}) {
       if(entry.getName.endsWith(".class")) {
-        val cr = new ClassReader(jin)
-        val cn = new ClassNode()
-        cr.accept(cn, ClassReader.EXPAND_FRAMES)
+        val cn = readClassNode(jin)
         if(jarData.classes.contains(cn.name)) sys.error("Repeat class name: "+cn.name)
         jarData.classes.put(cn.name, new ClassNodeWrapper(cn, noCopy = true))
       } else jarData.resources.put(entry.getName, IO.readBytes(jin))
@@ -138,9 +159,7 @@ object asm {
     }
     for((name, cn) <- data.classes) {
       jout.putNextEntry(new JarEntry(name+".class"))
-      val cw = new ClassWriter(ASM4)
-      cn.accept(cw)
-      jout.write(cw.toByteArray)
+      jout.write(dumpClassNode(cn))
     }
     jout.close()
   }

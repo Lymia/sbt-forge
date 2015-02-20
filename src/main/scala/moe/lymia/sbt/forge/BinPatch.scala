@@ -55,6 +55,7 @@ object BinPatch {
       hasher.update(input)
       hasher.getValue.toInt
   }
+  case object ChecksumException extends Exception
   def patchJar(sourceFile: File, targetFile: File, patchSet: PatchSet, log: Logger) {
     log.info("Patching "+sourceFile+" to "+targetFile)
     val jarIn  = new ZipFile(sourceFile)
@@ -76,9 +77,11 @@ object BinPatch {
                        "This is not fully supported by ForgeGradle, and something is probably very wrong with your universal jar.")
             case Some(expected) =>
               val hash = adlerHash(data)
-              if(hash != expected)
-                sys.error(entry.getName+" does not match the checksum expected by "+patch.patchName+". "+
-                          "The patch expects "+expected.toHexString+", while the checksum of the file is "+hash.toHexString+".")
+              if(hash != expected) {
+                log.error(entry.getName+" does not match the checksum expected by "+patch.patchName+". "+
+                          "The patch expects "+expected.toHexString+", while the checksum of the file is "+hash.toHexString+".\n")
+                throw ChecksumException
+              }
           }
           jarOut.write(patcher.patch(data, patch.patchData))
         case None =>
