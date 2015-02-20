@@ -1,3 +1,11 @@
+/*
+File derived from ForgeGradle code, available under the terms of the LGPL v2.1
+License available at <LICENSE.ForgeGradle>
+
+Original file: https://github.com/MinecraftForge/ForgeGradle/blob/d87353282d468d7655b4e69c621c6ac06e0ca554/src/main/java/net/minecraftforge/gradle/tasks/MergeJarsTask.java
+Modified by Lymia to remove dependencies on Gradle and Groovy, and to change the class from a task to a plain method.
+*/
+
 package moe.lymia.sbt.forge;
 
 import java.io.BufferedOutputStream;
