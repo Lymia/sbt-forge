@@ -21,10 +21,12 @@ object Exceptor {
       val (name, data) = t
       inputJar.classes.get(name) match { 
         case Some(cn) =>
-          (data \ "enclosingMethod").asOpt[JsObject] foreach { obj =>
+          for(obj             <- (data \ "enclosingMethod").asOpt[JsObject];
+              outerMethod     <- (obj \ "name").asOpt[String];
+              outerMethodDesc <- (obj \ "desc").asOpt[String]) {
             cn.outerClass = (obj \ "owner").as[String]
-            cn.outerMethod = (obj \ "name").asOpt[String].getOrElse(null)
-            cn.outerMethodDesc = (obj \ "desc").asOpt[String].getOrElse(null)
+            cn.outerMethod = outerMethod
+            cn.outerMethodDesc = outerMethodDesc
           }
           (data \ "innerClasses").asOpt[Seq[JsObject]] foreach { _ foreach { l =>
             val icn = new InnerClassNode((l \ "inner_class").as[String],
