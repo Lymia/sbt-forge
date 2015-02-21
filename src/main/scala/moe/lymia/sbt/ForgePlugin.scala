@@ -16,6 +16,7 @@ import forge.mapping._
 import language._
 
 // TODO: Add support for 'forge-internal' mapping to pull mappings from userdev archive.
+// TODO: Split this into serveral files?
 object ForgePlugin extends Plugin {
   object forge { 
     // User setting keys
@@ -371,8 +372,7 @@ object ForgePlugin extends Plugin {
       modDir.mkdirs()
       ln(artifact, modDir / artifact.getName)
     },
-    forge.downloadAssets := {
-    },
+    forge.downloadAssets := AssetManager.prepareAssets(forge.assetsDir.value, forge.assetsIndex.value, streams.value.log),
     forge.runClient in Runtime := {
       val runner = new ForkRun(forge.runOptions.value)
       val params = (Json.parse(IO.read(forge.dependenciesJson.value)) \ "minecraftArguments").as[String].split(" ")
@@ -382,6 +382,7 @@ object ForgePlugin extends Plugin {
         params ++ Seq(
           "--username", "ForgeDevName",
           "--accessToken", "FML",
+          "--gameDir", forge.runDir.value.getCanonicalPath,
           "--assetsDir", forge.assetsDir.value.getCanonicalPath,
           "--assetIndex", forge.mcVersion.value,
           "--userProperties", "{}"
@@ -399,8 +400,10 @@ object ForgePlugin extends Plugin {
       ))
     },
 
-    forge.runClient in Runtime <<= (forge.runClient in Runtime) dependsOn (forge.prepareRunDir, lwjgl.copyNatives, forge.downloadAssets),
-    forge.runServer in Runtime <<= (forge.runServer in Runtime) dependsOn (forge.prepareRunDir),
+    forge.runClient in Runtime <<= (forge.runClient in Runtime) dependsOn 
+      (Keys.`package` in Compile, forge.prepareRunDir, lwjgl.copyNatives, forge.downloadAssets),
+    forge.runServer in Runtime <<= (forge.runServer in Runtime) dependsOn 
+      (Keys.`package` in Compile, forge.prepareRunDir),
 
     clean := {
       // Clean the resolution cache before cleaning up files.
