@@ -359,7 +359,9 @@ object ForgePlugin extends Plugin {
     forge.runOptions := ForkOptions(
       connectInput = true,
       outputStrategy = Some(StdoutOutput),
-      runJVMOptions = javaOptions.value,
+      runJVMOptions = javaOptions.value ++ Seq(
+        "-Dfml.ignoreInvalidMinecraftCertificates=true"
+      ),
       workingDirectory = Some(forge.runDir.value)
     ),
     forge.prepareRunDir := {
