@@ -30,8 +30,8 @@ object Exceptor {
           }
           (data \ "innerClasses").asOpt[Seq[JsObject]] foreach { _ foreach { l =>
             val icn = new InnerClassNode((l \ "inner_class").as[String],
-                                         (l \ "outer_class").asOpt[String].getOrElse(null),
-                                         (l \ "inner_name").asOpt[String].getOrElse(null),
+                                         (l \ "outer_class").asOpt[String].orNull,
+                                         (l \ "inner_name").asOpt[String].orNull,
                                          (l \ "access").asOpt[String].map(x => Integer.parseInt(x, 16)).getOrElse(0))
             cn.innerClasses += icn
           }}

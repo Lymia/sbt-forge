@@ -16,6 +16,8 @@ scalaVersion := "2.10.4"
 
 resolvers += "typesafe" at "http://repo.typesafe.com/typesafe/maven-releases/"
 
+resolvers += "minecraft" at "https://libraries.minecraft.net/"
+
 libraryDependencies += "org.ow2.asm" % "asm-debug-all" % "5.0.3"
 
 libraryDependencies += "com.github.jponge" % "lzma-java" % "1.2"
@@ -25,6 +27,8 @@ libraryDependencies += "com.nothome" % "javaxdelta" % "2.0.1"
 libraryDependencies += "com.typesafe.play" %% "play-json" % "2.3.4"
 
 libraryDependencies += "com.google.guava" % "guava" % "18.0"
+
+libraryDependencies += "com.mojang" % "authlib" % "1.5.17"
 
 scalacOptions ++= Seq("-Xlint", "-feature")
 
