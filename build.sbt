@@ -18,7 +18,7 @@ resolvers += "typesafe" at "http://repo.typesafe.com/typesafe/maven-releases/"
 
 resolvers += "minecraft" at "https://libraries.minecraft.net/"
 
-libraryDependencies += "org.ow2.asm" % "asm-debug-all" % "5.0.3"
+libraryDependencies += "org.ow2.asm" % "asm-debug-all" % "6.0_BETA"
 
 libraryDependencies += "com.github.jponge" % "lzma-java" % "1.2"
 

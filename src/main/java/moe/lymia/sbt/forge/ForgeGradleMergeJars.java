@@ -9,15 +9,11 @@ Modified by Lymia to remove dependencies on Gradle and Groovy, and to change the
 package moe.lymia.sbt.forge;
 
 import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.DataInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -36,8 +32,10 @@ import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.InnerClassNode;
 
 import com.google.common.base.Function;
+import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
@@ -45,101 +43,18 @@ import com.google.common.io.ByteStreams;
 
 public class ForgeGradleMergeJars
 {
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
 
-    private String sideClass, sideOnlyClass;
+    private static final String SIDE_CLASS = "Lnet/minecraftforge/fml/relauncher/Side;";
+    private static final String SIDE_ONLY_CLASS = "Lnet/minecraftforge/fml/relauncher/SideOnly;";
 
-    private HashSet<String> copyToServer = new HashSet<String>();
-    private HashSet<String> copyToClient = new HashSet<String>();
-    private HashSet<String> dontAnnotate = new HashSet<String>();
-    private HashSet<String> dontProcess  = new HashSet<String>();
-
-    public void mergeJars(File client, File server, File outJar, InputStream mergeCfg, boolean forgeClassesMoved) throws IOException
+    public void processJar(File clientInFile, File serverInFile, File classesJar, File outFile) throws IOException
     {
-        // set classes.
-        if (forgeClassesMoved)
+        try (ZipFile cInJar = new ZipFile(clientInFile);
+             ZipFile sInJar = new ZipFile(serverInFile);
+             ZipFile classesInJar = new ZipFile(classesJar);
+             ZipOutputStream outJar = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(outFile))))
         {
-            sideClass = "Lnet/minecraftforge/fml/relauncher/Side;";
-            sideOnlyClass = "Lnet/minecraftforge/fml/relauncher/SideOnly;";
-        }
-        else
-        {
-            sideClass = "Lcpw/mods/fml/relauncher/Side;";
-            sideOnlyClass = "Lcpw/mods/fml/relauncher/SideOnly;";
-        }
-        
-        readConfig(mergeCfg);
-        processJar(client, server, outJar);
-    }
-
-    private void readConfig(InputStream mapFile)
-    {
-        try
-        {
-            DataInputStream in = new DataInputStream(mapFile);
-            BufferedReader br = new BufferedReader(new InputStreamReader(in));
-
-            String line;
-            while ((line = br.readLine()) != null)
-            {
-                line = line.split("#")[0];
-                char cmd = line.charAt(0);
-                line = line.substring(1).trim();
-
-                switch (cmd)
-                    {
-                        case '!':
-                            dontAnnotate.add(line);
-                            break;
-                        case '<':
-                            copyToClient.add(line);
-                            break;
-                        case '>':
-                            copyToServer.add(line);
-                            break;
-                        case '^':
-                            dontProcess.add(line);
-                            break;
-                    }
-            }
-
-            in.close();
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public void processJar(File clientInFile, File serverInFile, File outFile) throws IOException
-    {
-        ZipFile cInJar = null;
-        ZipFile sInJar = null;
-        ZipOutputStream outJar = null;
-
-        try
-        {
-            try
-            {
-                cInJar = new ZipFile(clientInFile);
-                sInJar = new ZipFile(serverInFile);
-            }
-            catch (FileNotFoundException e)
-            {
-                throw new FileNotFoundException("Could not open input file: " + e.getMessage());
-            }
-
-            // different messages.
-
-            try
-            {
-                outJar = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(outFile)));
-            }
-            catch (FileNotFoundException e)
-            {
-                throw new FileNotFoundException("Could not open output file: " + e.getMessage());
-            }
-
             // read in the jars, and initalize some variables
             HashSet<String> resources = new HashSet<String>();
             HashMap<String, ZipEntry> cClasses = getClassEntries(cInJar, outJar, resources);
@@ -155,20 +70,8 @@ public class ForgeGradleMergeJars
 
                 if (sEntry == null)
                 {
-                    if (!copyToServer.contains(name))
-                    {
-                        copyClass(cInJar, cEntry, outJar, true);
-                        cAdded.add(name);
-                    }
-                    else
-                    {
-                        if (DEBUG)
-                        {
-                            System.out.println("Copy class c->s : " + name);
-                        }
-                        copyClass(cInJar, cEntry, outJar, true);
-                        cAdded.add(name);
-                    }
+                    copyClass(cInJar, cEntry, outJar, true);
+                    cAdded.add(name);
                     continue;
                 }
 
@@ -178,8 +81,12 @@ public class ForgeGradleMergeJars
                 byte[] data = processClass(cData, sData);
 
                 ZipEntry newEntry = new ZipEntry(cEntry.getName());
-                outJar.putNextEntry(newEntry);
-                outJar.write(data);
+                try {
+                    outJar.putNextEntry(newEntry);
+                    outJar.write(data);
+                } finally {
+                    outJar.closeEntry();
+                }
                 cAdded.add(name);
             }
 
@@ -192,38 +99,27 @@ public class ForgeGradleMergeJars
                 copyClass(sInJar, entry.getValue(), outJar, false);
             }
 
+            for (String internalName : new String[] { SIDE_ONLY_CLASS, SIDE_CLASS })
+            {
+                String name = internalName.replace("/", ".").substring(1, internalName.length() - 1); // FIXME hack
+                String eName = name.replace(".", "/");
+                String classPath = eName + ".class";
+                ZipEntry newEntry = new ZipEntry(classPath);
+                if (!cAdded.contains(eName))
+                {
+                    try {
+                        outJar.putNextEntry(newEntry);
+                        outJar.write(getClassBytes(classesInJar, name));
+                    } finally {
+                        outJar.closeEntry();
+                    }
+                }
+            }
+
         }
-        finally
+        catch (FileNotFoundException e)
         {
-            if (cInJar != null)
-            {
-                try
-                {
-                    cInJar.close();
-                }
-                catch (IOException e)
-                {}
-            }
-
-            if (sInJar != null)
-            {
-                try
-                {
-                    sInJar.close();
-                }
-                catch (IOException e)
-                {}
-            }
-            if (outJar != null)
-            {
-                try
-                {
-                    outJar.close();
-                }
-                catch (IOException e)
-                {}
-            }
-
+            throw new FileNotFoundException("Could not open input/output file: " + e.getMessage());
         }
     }
 
@@ -234,14 +130,11 @@ public class ForgeGradleMergeJars
 
         reader.accept(classNode, 0);
 
-        if (!dontAnnotate.contains(classNode.name))
+        if (classNode.visibleAnnotations == null)
         {
-            if (classNode.visibleAnnotations == null)
-            {
-                classNode.visibleAnnotations = new ArrayList<AnnotationNode>();
-            }
-            classNode.visibleAnnotations.add(getSideAnn(isClientOnly));
+            classNode.visibleAnnotations = new ArrayList<AnnotationNode>();
         }
+        classNode.visibleAnnotations.add(getSideAnn(isClientOnly));
 
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
         classNode.accept(writer);
@@ -257,15 +150,18 @@ public class ForgeGradleMergeJars
 
     private byte[] readEntry(ZipFile inFile, ZipEntry entry) throws IOException
     {
-        return ByteStreams.toByteArray(inFile.getInputStream(entry));
+        try (InputStream is = inFile.getInputStream(entry))
+        {
+            return ByteStreams.toByteArray(is);
+        }
     }
 
     private AnnotationNode getSideAnn(boolean isClientOnly)
     {
-        AnnotationNode ann = new AnnotationNode(sideOnlyClass);
+        AnnotationNode ann = new AnnotationNode(SIDE_ONLY_CLASS);
         ann.values = new ArrayList<Object>();
         ann.values.add("value");
-        ann.values.add(new String[] { sideClass, isClientOnly ? "CLIENT" : "SERVER" });
+        ann.values.add(new String[] { SIDE_CLASS, isClientOnly ? "CLIENT" : "SERVER" });
         return ann;
     }
 
@@ -279,7 +175,8 @@ public class ForgeGradleMergeJars
     private HashMap<String, ZipEntry> getClassEntries(ZipFile inFile, ZipOutputStream outFile, HashSet<String> resources) throws IOException
     {
         HashMap<String, ZipEntry> ret = new HashMap<String, ZipEntry>();
-        master: for (ZipEntry entry : Collections.list(inFile.entries()))
+
+        for (ZipEntry entry : Collections.list(inFile.entries()))
         {
             String entryName = entry.getName();
             // Always skip the manifest
@@ -290,20 +187,12 @@ public class ForgeGradleMergeJars
             if (entry.isDirectory())
             {
                 /*
-                if (!resources.contains(entryName))
-                {
-                    outFile.putNextEntry(entry);
-                }
-                */
+                 * if (!resources.contains(entryName))
+                 * {
+                 * outFile.putNextEntry(entry);
+                 * }
+                 */
                 continue;
-            }
-
-            for (String filter : dontProcess)
-            {
-                if (entryName.startsWith(filter))
-                {
-                    continue master;
-                }
             }
 
             if (!entryName.endsWith(".class") || entryName.startsWith("."))
@@ -324,6 +213,12 @@ public class ForgeGradleMergeJars
         return ret;
     }
 
+    private byte[] getClassBytes(ZipFile classesInJar, String name) throws IOException
+    {
+        String className = name.replace('.', '/').concat(".class");
+        return ByteStreams.toByteArray(classesInJar.getInputStream(classesInJar.getEntry(className)));
+    }
+
     public byte[] processClass(byte[] cIn, byte[] sIn)
     {
         ClassNode cClassNode = getClassNode(cIn);
@@ -331,10 +226,45 @@ public class ForgeGradleMergeJars
 
         processFields(cClassNode, sClassNode);
         processMethods(cClassNode, sClassNode);
+        processInners(cClassNode, sClassNode);
 
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
         cClassNode.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static boolean innerMatches(InnerClassNode o, InnerClassNode o2)
+    {
+        if (o.innerName == null && o2.innerName != null) return false;
+        if (o.innerName != null && !o.innerName.equals(o2.innerName)) return false;
+        if (o.name == null && o2.name != null) return false;
+        if (o.name != null && !o.name.equals(o2.name)) return false;
+        if (o.outerName == null && o2.outerName != null) return false;
+        if (o.outerName != null && o.outerName.equals(o2.outerName)) return false;
+        return true;
+    }
+    private static boolean contains(List<InnerClassNode> list, InnerClassNode node)
+    {
+        for (InnerClassNode n : list)
+            if (innerMatches(n, node))
+                return true;
+        return false;
+    }
+    private static void processInners(ClassNode cClass, ClassNode sClass)
+    {
+        List<InnerClassNode> cIners = cClass.innerClasses;
+        List<InnerClassNode> sIners = sClass.innerClasses;
+
+        for (InnerClassNode n : cIners)
+        {
+            if (!contains(sIners, n))
+                sIners.add(n);
+        }
+        for (InnerClassNode n : sIners)
+        {
+            if (!contains(cIners, n))
+                cIners.add(n);
+        }
     }
 
     private ClassNode getClassNode(byte[] data)
@@ -351,7 +281,8 @@ public class ForgeGradleMergeJars
         List<FieldNode> sFields = sClass.fields;
 
         int serverFieldIdx = 0;
-        if (DEBUG) System.out.printf("B: Server List: %s\nB: Client List: %s\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance));
+        if (DEBUG)
+            System.out.printf("B: Server List: %s\nB: Client List: %s\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance));
         for (int clientFieldIdx = 0; clientFieldIdx < cFields.size(); clientFieldIdx++)
         {
             FieldNode clientField = cFields.get(clientFieldIdx);
@@ -389,7 +320,8 @@ public class ForgeGradleMergeJars
                             }
                             serverField.visibleAnnotations.add(getSideAnn(false));
                             cFields.add(clientFieldIdx, serverField);
-                            if (DEBUG) System.out.printf("1. Server List: %s\n1. Client List: %s\nIdx: %d %d\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance), serverFieldIdx, clientFieldIdx);
+                            if (DEBUG)
+                                System.out.printf("1. Server List: %s\n1. Client List: %s\nIdx: %d %d\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance), serverFieldIdx, clientFieldIdx);
                         }
                     }
                     else
@@ -400,7 +332,8 @@ public class ForgeGradleMergeJars
                         }
                         clientField.visibleAnnotations.add(getSideAnn(true));
                         sFields.add(serverFieldIdx, clientField);
-                        if (DEBUG) System.out.printf("2. Server List: %s\n2. Client List: %s\nIdx: %d %d\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance), serverFieldIdx, clientFieldIdx);
+                        if (DEBUG)
+                            System.out.printf("2. Server List: %s\n2. Client List: %s\nIdx: %d %d\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance), serverFieldIdx, clientFieldIdx);
                     }
                 }
             }
@@ -412,11 +345,13 @@ public class ForgeGradleMergeJars
                 }
                 clientField.visibleAnnotations.add(getSideAnn(true));
                 sFields.add(serverFieldIdx, clientField);
-                if (DEBUG) System.out.printf("3. Server List: %s\n3. Client List: %s\nIdx: %d %d\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance), serverFieldIdx, clientFieldIdx);
+                if (DEBUG)
+                    System.out.printf("3. Server List: %s\n3. Client List: %s\nIdx: %d %d\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance), serverFieldIdx, clientFieldIdx);
             }
             serverFieldIdx++;
         }
-        if (DEBUG) System.out.printf("A. Server List: %s\nA. Client List: %s\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance));
+        if (DEBUG)
+            System.out.printf("A. Server List: %s\nA. Client List: %s\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance));
         if (sFields.size() != cFields.size())
         {
             for (int x = cFields.size(); x < sFields.size(); x++)
@@ -430,15 +365,20 @@ public class ForgeGradleMergeJars
                 cFields.add(x++, sF);
             }
         }
-        if (DEBUG) System.out.printf("E. Server List: %s\nE. Client List: %s\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance));
+        if (DEBUG)
+            System.out.printf("E. Server List: %s\nE. Client List: %s\n", Lists.transform(sFields, FieldName.instance), Lists.transform(cFields, FieldName.instance));
     }
 
-    private static class FieldName implements Function<FieldNode, String> {
+    private static class FieldName implements Function<FieldNode, String>
+    {
         public static FieldName instance = new FieldName();
-        public String apply(FieldNode in) {
+
+        public String apply(FieldNode in)
+        {
             return in.name;
         }
     }
+
     private void processMethods(ClassNode cClass, ClassNode sClass)
     {
         List<MethodNode> cMethods = cClass.methods;
@@ -577,7 +517,7 @@ public class ForgeGradleMergeJars
         @Override
         public String toString()
         {
-            return Objects.toStringHelper(this).add("name", node.name).add("desc", node.desc).add("server", server).add("client", client).toString();
+            return MoreObjects.toStringHelper(this).add("name", node.name).add("desc", node.desc).add("server", server).add("client", client).toString();
         }
     }
 }

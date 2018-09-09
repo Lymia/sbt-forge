@@ -25,9 +25,6 @@ object ForgePlugin extends Plugin {
     val mappings     = SettingKey[String]("forge-mappings",
       "Mapping from SRG names to MCP names to use")
 
-    val isRenamed    = SettingKey[Boolean]("forge-is-renamed",
-      "Used by merger. True if cpw.mods.fml.relauncher has been moved to net.minecraftforge.fml.relauncher")
-
     val cacheRoot    = SettingKey[File]("forge-cache-root")
 
     val buildDir     = SettingKey[File]("forge-build-dir",
@@ -90,16 +87,18 @@ object ForgePlugin extends Plugin {
       "By default, extracts dev.json from the userdev archive")
     val binpatches       = TaskKey[File]("forge-binpatches",
       "Binary patches to patch Minecraft classes with.")
+    val forgeClasses     = TaskKey[File]("forge-classes",
+      "Classes added by Minecraft Forge.")
     val mergeConfig      = TaskKey[File]("forge-merge-config",
       "Configuration for merging the client and server jars. "+
       "By default, extracts Forge's merge configuration from the userdev archive")
-    val srgFile           = TaskKey[File]("forge-srg-file",
+    val srgFile          = TaskKey[File]("forge-srg-file",
       "The .srg file used for notch->SRG deobf. "+
       "By default, extracts packaged.srg from the userdev archive")
-    val exceptorJson      = TaskKey[File]("forge-exceptor-json",
+    val exceptorJson     = TaskKey[File]("forge-exceptor-json",
       "The .json file used to restore inner/outer class attributes to classes. "+
       "By default, extracts exceptor.json from the userdev archive")
-    val excFile           = TaskKey[File]("forge-exc-file",
+    val excFile          = TaskKey[File]("forge-exc-file",
       "The .exc file used to restore exception data, add __OBFID fields, and constructor parameter names to classes. "+
       "By default, extracts packaged.json from the userdev archive")
 
@@ -110,10 +109,6 @@ object ForgePlugin extends Plugin {
       "Loads Forge's dependencies from dev.json")
 
     // Patch and merge client .jars
-    val patchServerJar = TaskKey[File]("forge-patch-server-jar",
-      "Applies Forge's patches to the Minecraft server binary")
-    val patchClientJar = TaskKey[File]("forge-patch-client-jar",
-      "Applies Forge's patches to the Minecraft client binary")
     val fgMergeJars    = TaskKey[File]("forge-fg-merge-jars",
       "Merges the Minecraft client and server binaries, using ForgeGradle's merger code")
     val mergedJar      = TaskKey[File]("forge-merge-jars",
@@ -424,31 +419,15 @@ object ForgePlugin extends Plugin {
     cleanFiles ++= (if(forge.cleanRunDir.value) Seq(forge.cacheRoot.value, forge.runDir.value)
                     else                        Seq(forge.cacheRoot.value))
   )
-  lazy val internalMergeClasses = Seq(
-    extractTask(forge.binpatches, forge.universalJar, "binpatches.pack.lzma", "binpatches.pack.lzma", forge.forgeDir),
-    patchJarTask(forge.patchClientJar, forge.clientJar, "minecraft_client_patched.jar", "client"),
-    patchJarTask(forge.patchServerJar, forge.serverJar, "minecraft_server_patched.jar", "server"),
-    forge.mergedJar := {
-      val log = streams.value.log
-      cachedFile(forge.forgeDir.value / "minecraft_merged.jar") { outFile =>
-        log.info("Merging patched client and server binaries to "+outFile)
-        writeJarFile(Merger.merge(
-          loadJarFile(new FileInputStream(forge.patchClientJar.value)),
-          loadJarFile(new FileInputStream(forge.patchServerJar.value)),
-          IO.readLines(forge.mergeConfig.value), log, forge.isRenamed.value
-        ), new FileOutputStream(outFile))
-      }
-    }
-  )
   lazy val forgeGradleMergeClasses = Seq(
     extractTask(forge.binpatches, forge.userdevArchive, "devbinpatches.pack.lzma", "devbinpatches.pack.lzma", forge.forgeDir),
+    extractTask(forge.forgeClasses, forge.userdevArchive, "classes.jar", "classes.jar", forge.forgeDir),
     forge.fgMergeJars := {
       val log = streams.value.log
       cachedFile(forge.forgeDir.value / "minecraft_merged_fg.jar") { outFile =>
         log.info("Merging client and server binaries to "+outFile)
-        Merger.forgeGradleMerge(forge.clientJar.value, forge.serverJar.value,
-                                outFile, new FileInputStream(forge.mergeConfig.value),
-                                forge.isRenamed.value)
+        Merger.forgeGradleMerge(forge.clientJar.value, forge.serverJar.value, forge.forgeClasses.value,
+                                outFile)
       }
     },
     patchJarTask(forge.mergedJar, forge.fgMergeJars, "minecraft_merged.jar", "merged")
@@ -458,7 +437,6 @@ object ForgePlugin extends Plugin {
     forge.version   := "14.23.4.2759",
     forge.mappings  := "stable-39",
     scalaVersion    := "2.11.1",
-    forge.isRenamed := true,
 
     forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.plugins", "org.lwjgl.lwjgl")
   )

@@ -29,7 +29,7 @@ object VersionManager {
   def getClientDownloadUrl(versionCache: File, version: String) =
     (loadVersionInfo(versionCache, version) \ "downloads" \ "client" \ "url").as[String]
   def getServerDownloadUrl(versionCache: File, version: String) =
-    (loadVersionInfo(versionCache, version) \ "downloads" \ "client" \ "url").as[String]
+    (loadVersionInfo(versionCache, version) \ "downloads" \ "server" \ "url").as[String]
 
   def getLibrariesFromJson(json: JsValue) =
     (json \ "libraries").as[Seq[JsObject]].map(elem => {

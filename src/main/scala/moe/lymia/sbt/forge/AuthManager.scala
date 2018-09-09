@@ -37,7 +37,7 @@ object AuthManager {
         None
     }
   def authWithToken(username: String, token: AccessToken, log: Logger) = {
-    log.info("Authenticating as "+username+" with access token...")
+    log.info(s"Authenticating as $username with access token...")
     val auth = new YggdrasilAuthenticationService(Proxy.NO_PROXY, token.clientToken).createUserAuthentication(Agent.MINECRAFT)
     auth.setUsername(username)
     auth.loadFromStorage(Map("accessToken" -> token.token))
@@ -47,7 +47,7 @@ object AuthManager {
   private def generateClientToken() = new String((0 until 32).map{_ => 
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-".charAt(rng.nextInt(64)).toByte}.toArray)
   def authWithPassword(username: String, password: String, log: Logger) = {
-    log.info("Authenticating as "+username+" with password...")
+    log.info(s"Authenticating as $username with password...")
     val clientToken = generateClientToken()
     val auth = new YggdrasilAuthenticationService(Proxy.NO_PROXY, clientToken).createUserAuthentication(Agent.MINECRAFT)
     auth.setUsername(username)
@@ -66,12 +66,12 @@ object AuthManager {
 
   def checkForAuthUpdate(authCache: File, name: String, auth: UserAuthentication, accessToken: AccessToken, log: Logger) =
     if(accessToken.token != auth.getAuthenticatedToken) {
-      log.info("Updating stored access token for user "+name)
+      log.info(s"Updating stored access token for user $name")
       writeTokenToCache(authCache, name, AccessToken(auth.getAuthenticatedToken, accessToken.clientToken))
     }
   def tryPasswordAuth(name: String, log: Logger): (AccessToken, UserAuthentication) = {
     for(i <- 0 until 5) {
-      val password = System.console.readPassword("Password for "+name+": ")
+      val password = System.console.readPassword(s"Password for $name: ")
       if(password == null) sys.error("Password authentication canceled")
       authWithPassword(name, String.valueOf(password), log) match {
         case Some((clientToken, auth)) =>
