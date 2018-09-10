@@ -2,15 +2,15 @@ package moe.lymia.sbt.forge
 
 import sbt._
 import java.io._
+import java.util
 import java.util.jar._
 
 import org.objectweb.asm._
 import org.objectweb.asm.tree._
 
-import scala.collection.JavaConversions._
-import scala.collection.mutable.{ArrayBuffer, HashMap}
+import scala.collection.JavaConverters._
+import scala.collection.mutable.HashMap
 import scala.collection.mutable
-
 import language._
 
 object asm {
@@ -18,6 +18,47 @@ object asm {
     def iterator = map.valuesIterator
     def apply(i: Int) = map.valuesIterator.drop(i).next()
     def length = map.size
+  }
+
+  trait AnnotationContainer[T] {
+    def visibleAnnotations  (t: T): mutable.Buffer[AnnotationNode]
+    def invisibleAnnotations(t: T): mutable.Buffer[AnnotationNode]
+  }
+  implicit object MethodAnnotationContainer extends AnnotationContainer[MethodNode] {
+    override def visibleAnnotations(mn: MethodNode) = {
+      if (mn.visibleAnnotations == null) mn.visibleAnnotations = new util.ArrayList[AnnotationNode]
+      mn.visibleAnnotations.asScala
+    }
+    override def invisibleAnnotations(mn: MethodNode) = {
+      if (mn.invisibleAnnotations == null) mn.invisibleAnnotations = new util.ArrayList[AnnotationNode]
+      mn.invisibleAnnotations.asScala
+    }
+  }
+  implicit object FieldAnnotationContainer extends AnnotationContainer[FieldNode] {
+    override def visibleAnnotations(fn: FieldNode) = {
+      if (fn.visibleAnnotations == null) fn.visibleAnnotations = new util.ArrayList[AnnotationNode]
+      fn.visibleAnnotations.asScala
+    }
+    override def invisibleAnnotations(fn: FieldNode) = {
+      if (fn.invisibleAnnotations == null) fn.invisibleAnnotations = new util.ArrayList[AnnotationNode]
+      fn.invisibleAnnotations.asScala
+    }
+  }
+  implicit object ClassAnnotationContainer extends AnnotationContainer[ClassNodeWrapper] {
+    override def visibleAnnotations(cn: ClassNodeWrapper) = {
+      if (cn.classNode.visibleAnnotations == null)
+        cn.classNode.visibleAnnotations = new util.ArrayList[AnnotationNode]
+      cn.classNode.visibleAnnotations.asScala
+    }
+    override def invisibleAnnotations(cn: ClassNodeWrapper) = {
+      if (cn.classNode.invisibleAnnotations == null)
+        cn.classNode.invisibleAnnotations = new util.ArrayList[AnnotationNode]
+      cn.classNode.invisibleAnnotations.asScala
+    }
+  }
+  implicit class AnnotationContainerExt[T: AnnotationContainer](t: T) {
+    def visibleAnnotations = implicitly[AnnotationContainer[T]].visibleAnnotations(t)
+    def invisibleAnnotations = implicitly[AnnotationContainer[T]].invisibleAnnotations(t)
   }
 
   case class MethodName(name: String, desc: String)
@@ -38,22 +79,22 @@ object asm {
 
     val methodMap = new mutable.LinkedHashMap[MethodName, MethodNode]
     def addMethod(n: MethodNode) = methodMap.put(n.methodName, n)
-    for(node <- classNode.methods) addMethod(node)
-    classNode.methods = new MapWrapperSeq(methodMap)
+    for(node <- classNode.methods.asScala) addMethod(node)
+    classNode.methods = new MapWrapperSeq(methodMap).asJava
 
     val fieldMap  = new mutable.LinkedHashMap[FieldName, FieldNode]
     def addField(n: FieldNode) = fieldMap.put(n.fieldName, n)
-    for(node <- classNode.fields) addField(node)
-    classNode.fields = new MapWrapperSeq(fieldMap)
+    for(node <- classNode.fields.asScala) addField(node)
+    classNode.fields = new MapWrapperSeq(fieldMap).asJava
 
     def syncNames() {
       val methods = methodMap.values.toSeq
       methodMap.clear()
-      for(m <- classNode.methods) addMethod(m)
+      for(m <- methods) addMethod(m)
 
-      val fields  = fieldMap.keys.toSeq
+      val fields  = fieldMap.values.toSeq
       fieldMap.clear()
-      for(f <- classNode.fields) addField(f)
+      for(f <- fields) addField(f)
     }
 
     override def clone() = new ClassNodeWrapper(classNode)

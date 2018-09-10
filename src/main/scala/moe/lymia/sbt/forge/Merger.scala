@@ -8,12 +8,30 @@ import org.objectweb.asm.tree._
 import asm._
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
-// Merges the client and server sides, already patched using binpatches.jar
-// As this applies @SideOnly implicitly, we don't worry about that here.
 object Merger {
   val SideClassName = "net/minecraftforge/fml/relauncher/Side"
   val SideOnlyClassName = "net/minecraftforge/fml/relauncher/SideOnly"
+
+  private def markSideOnly[T: AnnotationContainer](c: T, side: String): Unit = {
+    if(!c.visibleAnnotations.exists(_.desc == s"L$SideOnlyClassName;")){
+      val an = new AnnotationNode(s"L$SideOnlyClassName;")
+      an.visitEnum("value", s"L$SideClassName;", side)
+      c.visibleAnnotations += an
+    }
+  }
+  private def mergeLists[A, B: AnnotationContainer](client: mutable.LinkedHashMap[A, B],
+                                                    server: mutable.LinkedHashMap[A, B]): Unit = {
+    for ((name, value) <- client)
+      if (!server.contains(name))
+        markSideOnly(value, "CLIENT")
+    for ((name, value) <- server)
+      if (!client.contains(name)) {
+        markSideOnly(value, "SERVER")
+        client.put(name, value)
+      }
+  }
 
   private case class InnerClassData(innerName: String, name: String, outerName: String)
   private object InnerClassData {
@@ -40,21 +58,17 @@ object Merger {
     for((name, clientClass) <- client.classes) {
       log.debug(s"Copying class $name from client.")
       target.classes.put(name, clientClass)
+
+      if (!server.classes.contains(name))
+        markSideOnly(clientClass, "CLIENT")
     }
     for ((name, serverClass) <- server.classes) {
       target.classes.get(name) match {
         case Some(clientClass) =>
           log.debug(s"Merging class $name between server and client.")
 
-          // Merge methods
-          for ((name, method) <- serverClass.methodMap)
-            if (!clientClass.methodMap.contains(name))
-              clientClass.methodMap.put(name, method)
-
-          // Merge fields
-          for ((name, field) <- serverClass.fieldMap)
-            if (!clientClass.fieldMap.contains(name))
-              clientClass.fieldMap.put(name, field)
+          mergeLists(clientClass.methodMap, serverClass.methodMap)
+          mergeLists(clientClass.fieldMap, serverClass.fieldMap)
 
           // Merge inner classes
           val clientInnerClasses = clientClass.innerClasses.asScala.map(x => InnerClassData(x)).toSet
@@ -65,6 +79,7 @@ object Merger {
           if (!serverDepPrefixes.exists(x => name.startsWith(x))) {
             log.debug(s"Copying class $name from server.")
             target.classes.put(name, serverClass)
+            markSideOnly(serverClass, "SERVER")
           }
       }
     }

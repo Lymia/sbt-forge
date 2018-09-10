@@ -2,7 +2,6 @@ package moe.lymia.sbt.forge
 
 import sbt._
 import asm._
-
 import java.io._
 import java.util.jar._
 
@@ -11,14 +10,14 @@ import org.objectweb.asm.tree._
 
 import scala.collection.JavaConversions._
 import scala.collection.mutable.HashMap
-
 import language._
+import scala.collection.mutable
 
 object classpath {
   // Classpath code
   def isSystemClass(name: String) = 
     try {
-      ClassLoader.getSystemClassLoader().loadClass(name.replace("/", "."))
+      ClassLoader.getSystemClassLoader.loadClass(name.replace("/", "."))
       true
     } catch {
       case _: Throwable => false
@@ -28,7 +27,7 @@ object classpath {
   private def findClassesInDirectory(path: String, file: File): Seq[(String, () => InputStream)] = 
     if(file.isDirectory) {
       file.listFiles.flatMap { f =>
-        val npath = (if(path == "") f.getName else path+"/"+f.getName)
+        val npath = if(path == "") f.getName else path+"/"+f.getName
         findClassesInDirectory(npath, f)
       }
     } else path match {
@@ -47,11 +46,11 @@ object classpath {
     if(file.isDirectory) findClassesInDirectory("", file)
     else                 findClassesInJar      (file)
   class ClasspathSearcher(targetJar: JarData, classpath: Seq[File], log: Logger) {
-    private val classSources   = new HashMap[String, () => InputStream]
-    private val classLocation  = new HashMap[String, File]
-    private val sourceContents = new HashMap[File, Seq[String]]
+    private val classSources   = new mutable.HashMap[String, () => InputStream]
+    private val classLocation  = new mutable.HashMap[String, File]
+    private val sourceContents = new mutable.HashMap[File, Seq[String]]
 
-    val resolve = cacheFunction { (name: String) => targetJar.classes.get(name) orElse 
+    val resolve = cacheFunction { name: String => targetJar.classes.get(name) orElse
       (classSources.get(name) match { 
         case Some(x) =>
           Some(new ClassNodeWrapper(readClassNode(x()), noCopy = true))
