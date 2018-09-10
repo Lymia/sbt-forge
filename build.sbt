@@ -6,6 +6,8 @@ organization := "moe.lymia"
 
 version := "0.1.0"
 
+isSnapshot := true
+
 publishMavenStyle := true
 
 publishArtifact in Test := false
@@ -32,7 +34,7 @@ libraryDependencies += "com.mojang" % "authlib" % "1.5.17"
 
 scalacOptions ++= Seq("-Xlint", "-feature")
 
-pomExtra := (
+pomExtra :=
   <url>https://github.com/Lymia/sbt-forge</url>
   <licenses>
     <license>
@@ -52,4 +54,3 @@ pomExtra := (
       <url>http://github.com/Lymia</url>
     </developer>
   </developers>
-)
