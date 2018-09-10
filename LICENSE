@@ -72,8 +72,3 @@ misrepresented as being the original software.
 Neither the name of 'TrussMod' nor the names of
 its contributors may be used to endorse or promote products derived
 from this software without specific prior written permission.
-
--------------------------------------------------------------------------------
-
-ForgeGradleMergeJars.java is based off ForgeGradle. ForgeGradle is available
-under the terms of the LGPL v2.1

@@ -43,7 +43,7 @@ object mapping {
 
 
     def checkConsistancy() = {
-      if(!(classMapping.values.toSet & classMapping.keySet).isEmpty)
+      if((classMapping.values.toSet & classMapping.keySet).nonEmpty)
         sys.error("Possible cycle in mappings: "+(classMapping.values.toSet & classMapping.keySet))
     }
     def reverseMapping() =

@@ -1,70 +1,34 @@
 package moe.lymia.sbt.forge
 
 import sbt._
-
 import java.io._
-import java.util.zip._
 import java.util.jar._
 
 import org.objectweb.asm._
-import org.objectweb.asm.Opcodes._
-import org.objectweb.asm.util._
 import org.objectweb.asm.tree._
 
 import scala.collection.JavaConversions._
-import scala.collection.mutable.{HashMap, ArrayBuffer}
+import scala.collection.mutable.{ArrayBuffer, HashMap}
+import scala.collection.mutable
 
 import language._
 
 object asm {
-  // TODO: Make method name/method desc easier to work with
-  case class MethodName(name: String, desc: String)
-  case class FieldName (name: String, desc: String)
-  private class MapWrapperSeq[A, B](map: collection.mutable.Map[A, B]) extends Seq[B] {
-    def iterator = map.iterator.map(_._2)
-    def apply(i: Int) = iterator.drop(i).next
+  private class MapWrapperSeq[A, B](map: mutable.LinkedHashMap[A, B]) extends Seq[B] {
+    def iterator = map.valuesIterator
+    def apply(i: Int) = map.valuesIterator.drop(i).next()
     def length = map.size
   }
-  trait AnnotationContainer {
-    def visibleAnnotations  : collection.mutable.Buffer[AnnotationNode]
-    def invisibleAnnotations: collection.mutable.Buffer[AnnotationNode]
-  }
-  implicit class RichMethodNode(mn: MethodNode) extends AnnotationContainer {
+
+  case class MethodName(name: String, desc: String)
+  case class FieldName (name: String, desc: String)
+  implicit class RichMethodNode(mn: MethodNode) {
     def methodName = MethodName(mn.name, mn.desc)
-
-    def visibleAnnotations = {
-      if(mn.visibleAnnotations == null) mn.visibleAnnotations = new ArrayBuffer[AnnotationNode]
-      mn.visibleAnnotations
-    }
-    def invisibleAnnotations = {
-      if(mn.invisibleAnnotations == null) mn.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
-      mn.invisibleAnnotations
-    }
   }
-  implicit class RichFieldNode(fn: FieldNode) extends AnnotationContainer {
+  implicit class RichFieldNode(fn: FieldNode) {
     def fieldName = FieldName(fn.name, fn.desc)
-
-    def visibleAnnotations = {
-      if(fn.visibleAnnotations == null) fn.visibleAnnotations = new ArrayBuffer[AnnotationNode]
-      fn.visibleAnnotations
-    }
-    def invisibleAnnotations = {
-      if(fn.invisibleAnnotations == null) fn.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
-      fn.invisibleAnnotations
-    }
   }
-  implicit class RichClassNode(cn: ClassNode) extends AnnotationContainer {
-    def visibleAnnotations = {
-      if(cn.visibleAnnotations == null) cn.visibleAnnotations = new ArrayBuffer[AnnotationNode]
-      cn.visibleAnnotations
-    }
-    def invisibleAnnotations = {
-      if(cn.invisibleAnnotations == null) cn.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
-      cn.invisibleAnnotations
-    }
-  }
-  class ClassNodeWrapper(private var inNode: ClassNode = null,
-                         noCopy: Boolean = false) extends AnnotationContainer {
+  class ClassNodeWrapper(private var inNode: ClassNode = null, noCopy: Boolean = false) {
     val classNode = if(noCopy && inNode != null) inNode else {
       val cn = new ClassNode()
       if(inNode != null) inNode.accept(cn)
@@ -72,26 +36,15 @@ object asm {
     }
     inNode = null // remove reference so we don't cause big leaks
 
-    // TODO: Only do the data transformation when methodMap or fieldMap is requested
-
-    // XXX: This might turn out to be unsafe?
-    // TreeMap would be a little safer since ordering is a lot more guaranteed with those.
-    // ... but scala.collection.mutable.TreeMap does not exist.
-    val methodMap = new HashMap[MethodName, MethodNode]
+    val methodMap = new mutable.LinkedHashMap[MethodName, MethodNode]
     def addMethod(n: MethodNode) = methodMap.put(n.methodName, n)
     for(node <- classNode.methods) addMethod(node)
     classNode.methods = new MapWrapperSeq(methodMap)
 
-    val fieldMap  = new HashMap[FieldName, FieldNode]
+    val fieldMap  = new mutable.LinkedHashMap[FieldName, FieldNode]
     def addField(n: FieldNode) = fieldMap.put(n.fieldName, n)
     for(node <- classNode.fields) addField(node)
     classNode.fields = new MapWrapperSeq(fieldMap)
-
-    if(classNode.visibleAnnotations == null) classNode.visibleAnnotations = new ArrayBuffer[AnnotationNode]
-    if(classNode.invisibleAnnotations == null) classNode.invisibleAnnotations = new ArrayBuffer[AnnotationNode]
-
-    def visibleAnnotations   = classNode.visibleAnnotations
-    def invisibleAnnotations = classNode.invisibleAnnotations
 
     def syncNames() {
       val methods = methodMap.values.toSeq
@@ -112,7 +65,7 @@ object asm {
     def syncClassNames = new JarData(resources.clone, {
       val classes = new HashMap[String, ClassNodeWrapper]
       for((_, cn) <- this.classes) 
-        if(classes.contains(cn.name)) sys.error("Repeat class name: "+cn.name)
+        if(classes.contains(cn.name)) sys.error(s"Duplicate class name: ${cn.name}")
         else classes.put(cn.name, new ClassNodeWrapper(cn))
       classes
     })
@@ -144,7 +97,7 @@ object asm {
     while({entry = jin.getNextJarEntry; entry != null}) {
       if(entry.getName.endsWith(".class")) {
         val cn = readClassNode(jin)
-        if(jarData.classes.contains(cn.name)) sys.error("Repeat class name: "+cn.name)
+        if(jarData.classes.contains(cn.name)) sys.error(s"Duplicate class name: ${cn.name}")
         jarData.classes.put(cn.name, new ClassNodeWrapper(cn, noCopy = true))
       } else jarData.resources.put(entry.getName, IO.readBytes(jin))
     }
@@ -158,9 +111,10 @@ object asm {
       jout.write(data)
     }
     for((name, cn) <- data.classes) {
-      jout.putNextEntry(new JarEntry(name+".class"))
+      jout.putNextEntry(new JarEntry(s"$name.class"))
       jout.write(dumpClassNode(cn))
     }
+    jout.finish()
     jout.close()
   }
 }

@@ -1,72 +1,78 @@
 package moe.lymia.sbt.forge
 
 import sbt._
-
 import java.io._
-import java.util.Arrays
+import java.util
 
 import org.objectweb.asm.tree._
-
 import asm._
 
+import scala.collection.JavaConverters._
+
+// Merges the client and server sides, already patched using binpatches.jar
+// As this applies @SideOnly implicitly, we don't worry about that here.
 object Merger {
-  private def markSideOnly(c: AnnotationContainer, side: String): Unit = {
-    if(!c.visibleAnnotations.exists(_.desc == "Lnet/minecraftforge/fml/relauncher/SideOnly;")){
-      val an = new AnnotationNode("Lnet/minecraftforge/fml/relauncher/SideOnly;")
-      an.visitEnum("value", "Lnet/minecraftforge/fml/relauncher/Side;", side)
-      c.visibleAnnotations += an
-    }
+  val SideClassName = "net/minecraftforge/fml/relauncher/Side"
+  val SideOnlyClassName = "net/minecraftforge/fml/relauncher/SideOnly"
+
+  private case class InnerClassData(innerName: String, name: String, outerName: String)
+  private object InnerClassData {
+    def apply(icn: InnerClassNode): InnerClassData = apply(icn.innerName, icn.name, icn.outerName)
   }
-
-  def forgeGradleMerge(client: File, server: File, outJar: File, classesJar: File) {
-    new ForgeGradleMergeJars().processJar(client, server, outJar, classesJar)
-  }
-
-  def merge(client: JarData, server: JarData, config: Seq[String], log: Logger) = {
-    val dontAnnotate = config.filter(_.startsWith("!")).map(_.substring(1)).toSet
-    val exclude      = config.filter(_.startsWith("^")).map(_.substring(1))
-    // copyToServer and copyToClient do nothing in ForgeGradle. Just ignore them for now.
-    def isExcluded(name: String) = exclude.exists(name.startsWith _)
-
+  def merge(clientPath: File, serverPath: File, classesPath: File, serverDepPrefixes: Seq[String],
+            log: Logger) = {
+    val client = loadJarFile(new FileInputStream(clientPath))
+    val server = loadJarFile(new FileInputStream(serverPath))
+    val classes = loadJarFile(new FileInputStream(classesPath))
     val target = new JarData()
-    for((name, data) <- client.resources) if(!isExcluded(name))
+
+    for((name, data) <- client.resources)
       target.resources.put(name, data)
-    for((name, data) <- server.resources) if(!isExcluded(name)) target.resources.get(name) match {
-      case Some(cdata) => if(!Arrays.equals(cdata, data)) sys.error("Resource "+name+" does not match between client and server.")
-      case None => target.resources.put(name, data)
+    for((name, data) <- server.resources) target.resources.get(name) match {
+      case Some(cdata) =>
+        if(!util.Arrays.equals(cdata, data))
+          sys.error(s"Resource $name does not match between client and server.")
+      case None =>
+        if (!serverDepPrefixes.exists(x => name.startsWith(x)))
+          target.resources.put(name, data)
     }
 
-    for((name, cn) <- client.classes) if(!isExcluded(name)) {
-      val ncn = cn.clone()
-      if(!dontAnnotate.contains(name)) if(!server.classes.contains(name)) markSideOnly(ncn, "CLIENT")
-      target.classes.put(name, ncn)
+    for((name, clientClass) <- client.classes) {
+      log.debug(s"Copying class $name from client.")
+      target.classes.put(name, clientClass)
     }
-    for((name, serverClass) <- server.classes) if(!isExcluded(name)) {
+    for ((name, serverClass) <- server.classes) {
       target.classes.get(name) match {
         case Some(clientClass) =>
-          // diff fields
-          for(t <- clientClass.fieldMap.keySet -- serverClass.fieldMap.keySet)
-            markSideOnly(clientClass.fieldMap(t), "CLIENT")
-          for(t <- serverClass.fieldMap.keySet -- clientClass.fieldMap.keySet) {
-            val field = serverClass.fieldMap(t)
-            markSideOnly(field, "SERVER")
-            clientClass.addField(field)
-          }
+          log.debug(s"Merging class $name between server and client.")
 
-          // diff methods
-          for(t <- clientClass.methodMap.keySet -- serverClass.methodMap.keySet)
-            markSideOnly(clientClass.methodMap(t), "CLIENT")
-          for(t <- serverClass.methodMap.keySet -- clientClass.methodMap.keySet) {
-            val method = serverClass.methodMap(t)
-            markSideOnly(method, "SERVER")
-            clientClass.addMethod(method)
-          }
+          // Merge methods
+          for ((name, method) <- serverClass.methodMap)
+            if (!clientClass.methodMap.contains(name))
+              clientClass.methodMap.put(name, method)
+
+          // Merge fields
+          for ((name, field) <- serverClass.fieldMap)
+            if (!clientClass.fieldMap.contains(name))
+              clientClass.fieldMap.put(name, field)
+
+          // Merge inner classes
+          val clientInnerClasses = clientClass.innerClasses.asScala.map(x => InnerClassData(x)).toSet
+          for (serverInnerClass <- serverClass.innerClasses.asScala)
+            if (!clientInnerClasses.contains(InnerClassData(serverInnerClass)))
+              clientClass.innerClasses.add(serverInnerClass)
         case None =>
-          val ncn = serverClass.clone()
-          if(!dontAnnotate.contains(name)) markSideOnly(ncn, "SERVER")
-          target.classes.put(name, ncn)
+          if (!serverDepPrefixes.exists(x => name.startsWith(x))) {
+            log.debug(s"Copying class $name from server.")
+            target.classes.put(name, serverClass)
+          }
       }
     }
+
+    target.classes.put(SideClassName,
+                       classes.classes.getOrElse(SideClassName, sys.error("Side not found in classes.jar")))
+    target.classes.put(SideOnlyClassName,
+                       classes.classes.getOrElse(SideOnlyClassName, sys.error("SideOnly not found in classes.jar")))
 
     target
   }
@@ -75,7 +81,7 @@ object Merger {
 
     for((name, data) <- minecraft.resources) target.resources.put(name, data)
     for((name, data) <- forge.resources) {
-      if(target.resources.contains(name) && !Arrays.equals(target.resources(name), data))
+      if(target.resources.contains(name) && !util.Arrays.equals(target.resources(name), data))
         log.warn("Forge overrides resource "+name+" in Minecraft binaries.")
       target.resources.put(name, data)
     }
