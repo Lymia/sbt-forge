@@ -1,14 +1,10 @@
 package moe.lymia.forge
 
-import java.io._
 import java.net.URL
 import java.security._
 
 import play.api.libs.json._
 import sbt._
-
-import scala.language._
-import scala.sys.process._
 
 object VersionManager {
   private def parseVersionManifest(versionManifest: File) = {
@@ -20,10 +16,10 @@ object VersionManager {
     val cacheFile = versionCache / s"version_$version.json"
     if (!cacheFile.exists()) {
       val versionManifestFile = versionCache / "version_manifest.json"
-      new URL("https://launchermeta.mojang.com/mc/game/version_manifest.json") #> versionManifestFile !!
+      download(new URL("https://launchermeta.mojang.com/mc/game/version_manifest.json"), versionManifestFile)
       val versionManifest = parseVersionManifest(versionManifestFile)
       val url = versionManifest.getOrElse(version, sys.error(s"No such Minecraft version $version exists!"))
-      url #> cacheFile !!
+      download(url, cacheFile)
     }
     Json.parse(IO.read(cacheFile))
   }
@@ -47,11 +43,13 @@ object VersionManager {
     (Json.parse(IO.read(index)) \ "objects").as[Map[String, JsObject]].toSeq.map { obj =>
       Asset(obj._1, (obj._2 \ "hash").as[String], (obj._2 \ "size").as[Long])
     }
+  private def assetIndexCachePath(versionCache: File, version: String) =
+    versionCache / s"asset_index_$version.json"
   private def loadAssetIndex(versionCache: File, version: String) = {
-    val assetIndexFile = versionCache / s"asset_index_$version.json"
+    val assetIndexFile = assetIndexCachePath(versionCache, version)
     if (!assetIndexFile.exists()) {
       val info = loadVersionInfo(versionCache, version)
-      new URL((info \ "assetIndex" \ "url").as[String]) #> assetIndexFile !!
+      download(new URL((info \ "assetIndex" \ "url").as[String]), assetIndexFile)
     }
     parseAssetIndex(assetIndexFile)
   }
@@ -96,14 +94,20 @@ object VersionManager {
       remaining
     } else bad
 
+    val assetIndexPath = assets / "indexes" / s"$version.json"
+    if (!assetIndexPath.exists()) {
+      log.info (s"Copying asset index file.")
+      IO.copyFile(assetIndexCachePath(versionCache, version), assetIndexPath)
+    }
+
     if (toDownload.nonEmpty) {
       log.info (s"Downloading ${toDownload.length} assets...")
       for ((asset, i) <- toDownload.zipWithIndex) {
         val file = assetPath(assets, asset)
-        if (i % 25 == 1) log.info(s"${i + 1}/${toDownload.length} downloaded...")
-        assetDownloadUrl(asset) #> file !!;
+        if (i % 25 == 24) log.info(s"${i + 1}/${toDownload.length} downloaded...")
+        download(assetDownloadUrl(asset), file)
         if (!checkAsset(file, asset)) {
-          file.delete()
+          IO.move(file, file.getParentFile / s"${file.getName}_corrupted")
           sys.error(s"Downloaded asset ${asset.name} (${asset.hash}) was corrupted!")
         }
       }

@@ -10,7 +10,6 @@ import moe.lymia.forge.mapping._
 import play.api.libs.json._
 import sbt.Keys._
 import sbt.{Def, _}
-import sbt.plugins.JvmPlugin
 
 import scala.language._
 import scala.sys.process._
@@ -235,11 +234,11 @@ object BaseForgePlugin extends AutoPlugin {
 
     forge.ltCacheDir   := forge.cacheRoot.value / "persistent",
     forge.dlCacheDir   := forge.ltCacheDir.value / "downloads",
-    forge.assetsDir    := forge.ltCacheDir.value / "assets",
     forge.versionsDir  := forge.ltCacheDir.value / "versions",
-    forge.authCacheDir := forge.ltCacheDir.value / "tokens",
 
     forge.runDir       := baseDirectory.value / "run",
+    forge.assetsDir    := forge.runDir.value / "assets",
+    forge.authCacheDir := forge.runDir.value / "tokens",
 
     forge.cleanLtCache := false,
     forge.cleanRunDir  := false,
