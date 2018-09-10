@@ -1,28 +1,25 @@
-package moe.lymia.sbt.forge
-
-import sbt._
-import asm._
-import mapping._
-import classpath._
+package moe.lymia.forge
 
 import java.io.File
 
-import org.objectweb.asm._
+import asm._
+import classpath._
+import mapping._
 import org.objectweb.asm.Opcodes._
-import org.objectweb.asm.tree._
+import org.objectweb.asm._
 import org.objectweb.asm.commons._
+import sbt._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.collection.mutable
-import scala.collection.mutable.{HashMap, MultiMap}
 
 object Renamer {
   // Fix mapping to include inner classes included with Forge
   val splitNameRegex = """^(.*)\$([^$]+)$""".r
   def findRemappableInnerClass(targetClasses: mutable.Map[String, ClassNodeWrapper], mapping: ForgeMapping, log: Logger) {
-    for((name, cn) <- targetClasses   if  mapping.classMapping.contains(name);
-        icn        <- cn.innerClasses if !mapping.classMapping.contains(icn.name) &&
-                                          icn.name.startsWith(s"$name$$")) {
+    for((name, cn) <- targetClasses           if  mapping.classMapping.contains(name);
+        icn        <- cn.innerClasses.asScala if !mapping.classMapping.contains(icn.name) &&
+                                                  icn.name.startsWith(s"$name$$")) {
         val newName = s"${mapping.classMapping(name)}${icn.name.substring(name.length)}"
         log.debug(s"Adding mapping for inner class ${icn.name} to $newName")
         mapping.classMapping.put(icn.name, newName)
@@ -33,8 +30,8 @@ object Renamer {
   def mapParams(targetJar: JarData, params: Seq[String]) {
     val paramMapping = readCsvMappings(params)
     for((_, cn) <- targetJar.classes;
-        mn      <- cn.methods if mn.localVariables != null;
-        lvn     <- mn.localVariables;
+        mn      <- cn.methodMap.values if mn.localVariables != null;
+        lvn     <- mn.localVariables.asScala;
         target  <- paramMapping.get(lvn.name))
       lvn.name = target
   }
@@ -57,7 +54,7 @@ object Renamer {
     val getOverrides: MethodSpec => Set[String] = cacheFunction { ms =>
       searcher.resolve(ms.owner).map(cn =>
         checkOverrides(ms.owner, cn.superName, MethodName(ms.name, ms.desc)) ++
-        cn.interfaces.flatMap(i => checkOverrides(ms.owner, i, MethodName(ms.name, ms.desc)))
+        cn.interfaces.asScala.flatMap(i => checkOverrides(ms.owner, i, MethodName(ms.name, ms.desc)))
       ).getOrElse(Set())
     }
     def overrides(caller: String, owner: String, name: String, desc: String) =
@@ -68,7 +65,7 @@ object Renamer {
     val resolveField: FieldSpec => Option[FieldSpec] = cacheFunction { fs =>
       searcher.resolve(fs.owner).flatMap { cn =>
         if(cn.fieldMap.contains(FieldName(fs.name, fs.desc))) Some(fs)
-        else cn.interfaces.map(x => resolveField(FieldSpec(x, fs.name, fs.desc))).find(_.isDefined).flatten orElse
+        else cn.interfaces.asScala.map(x => resolveField(FieldSpec(x, fs.name, fs.desc))).find(_.isDefined).flatten orElse
              resolveField(FieldSpec(cn.superName, fs.name, fs.desc))
       }
     }
@@ -76,7 +73,7 @@ object Renamer {
       searcher.resolve(ms.owner).flatMap { cn =>
         if(cn.methodMap.contains(MethodName(ms.name, ms.desc))) Some(ms)
         else resolveMethod(MethodSpec(cn.superName, ms.name, ms.desc)) orElse 
-             cn.interfaces.map(x => resolveMethod(MethodSpec(x, ms.name, ms.desc))).find(_.isDefined).flatten
+             cn.interfaces.asScala.map(x => resolveMethod(MethodSpec(x, ms.name, ms.desc))).find(_.isDefined).flatten
       }
     }
   }
@@ -161,7 +158,7 @@ object Renamer {
         if(externalIndirect.nonEmpty) {
           log.warn(s"The remapping $name$desc -> $target will propagate through external dependencies!")
           log.warn("This is very likely to cause issues.")
-          log.warn(s"External classes: ${externalIndirect.map(x => x + " in " + searcher.classLocation(x)).mkString(", ")}")
+          log.warn(s"External classes: ${externalIndirect.map(x => x + " in " + searcher.classLocationStr(x)).mkString(", ")}")
         }
 
         if(directClasses.nonEmpty)

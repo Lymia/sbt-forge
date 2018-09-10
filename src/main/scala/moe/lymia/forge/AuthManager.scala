@@ -1,9 +1,5 @@
-package moe.lymia.sbt.forge
+package moe.lymia.forge
 
-import sbt._
-import play.api.libs.json._
-
-import java.io._
 import java.net.Proxy
 
 import com.google.gson._
@@ -11,8 +7,9 @@ import com.mojang.authlib._
 import com.mojang.authlib.exceptions._
 import com.mojang.authlib.properties._
 import com.mojang.authlib.yggdrasil._
+import sbt._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 // Copying client auth tokens from Minecraft's configuration is not supported because
 // of how the clientId is used. Using it would invalidate the login for the Minecraft
@@ -40,7 +37,7 @@ object AuthManager {
     log.info(s"Authenticating as $username with access token...")
     val auth = new YggdrasilAuthenticationService(Proxy.NO_PROXY, token.clientToken).createUserAuthentication(Agent.MINECRAFT)
     auth.setUsername(username)
-    auth.loadFromStorage(Map("accessToken" -> token.token))
+    auth.loadFromStorage(Map("accessToken" -> (token.token : AnyRef)).asJava)
     doAuth(auth, log)
   }
   val rng = new java.security.SecureRandom()

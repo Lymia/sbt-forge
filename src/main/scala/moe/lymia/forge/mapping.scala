@@ -1,16 +1,13 @@
-package moe.lymia.sbt.forge
+package moe.lymia.forge
 
-import sbt._
-import asm._
 import java.io._
 
-import scala.collection.mutable
-import scala.collection.mutable.{HashMap, ArrayBuffer}
-
-import org.objectweb.asm._
+import moe.lymia.forge.asm._
 import org.objectweb.asm.commons._
+import sbt._
 
-import language._
+import scala.collection.mutable
+import scala.collection.mutable.HashMap
 
 object mapping {
   private val classNameRegex    = "([^ ]+)/([^ /]+)".r

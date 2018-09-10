@@ -1,11 +1,11 @@
-package moe.lymia.sbt.forge
+package moe.lymia.forge
 
-import sbt._
 import java.io._
 import java.util
 
-import org.objectweb.asm.tree._
 import asm._
+import org.objectweb.asm.tree._
+import sbt._
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable

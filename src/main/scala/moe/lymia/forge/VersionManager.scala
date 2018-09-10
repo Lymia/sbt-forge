@@ -1,11 +1,14 @@
-package moe.lymia.sbt.forge
-
-import sbt._
-import play.api.libs.json._
+package moe.lymia.forge
 
 import java.io._
 import java.net.URL
 import java.security._
+
+import play.api.libs.json._
+import sbt._
+
+import scala.language._
+import scala.sys.process._
 
 object VersionManager {
   private def parseVersionManifest(versionManifest: File) = {
@@ -17,10 +20,10 @@ object VersionManager {
     val cacheFile = versionCache / s"version_$version.json"
     if (!cacheFile.exists()) {
       val versionManifestFile = versionCache / "version_manifest.json"
-      IO.download(new URL("https://launchermeta.mojang.com/mc/game/version_manifest.json"), versionManifestFile)
+      new URL("https://launchermeta.mojang.com/mc/game/version_manifest.json") #> versionManifestFile !!
       val versionManifest = parseVersionManifest(versionManifestFile)
       val url = versionManifest.getOrElse(version, sys.error(s"No such Minecraft version $version exists!"))
-      IO.download(url, cacheFile)
+      url #> cacheFile !!
     }
     Json.parse(IO.read(cacheFile))
   }
@@ -48,7 +51,7 @@ object VersionManager {
     val assetIndexFile = versionCache / s"asset_index_$version.json"
     if (!assetIndexFile.exists()) {
       val info = loadVersionInfo(versionCache, version)
-      IO.download(new URL((info \ "assetIndex" \ "url").as[String]), assetIndexFile)
+      new URL((info \ "assetIndex" \ "url").as[String]) #> assetIndexFile !!
     }
     parseAssetIndex(assetIndexFile)
   }
@@ -98,7 +101,7 @@ object VersionManager {
       for ((asset, i) <- toDownload.zipWithIndex) {
         val file = assetPath(assets, asset)
         if (i % 25 == 1) log.info(s"${i + 1}/${toDownload.length} downloaded...")
-        IO.download(assetDownloadUrl(asset), file)
+        assetDownloadUrl(asset) #> file !!;
         if (!checkAsset(file, asset)) {
           file.delete()
           sys.error(s"Downloaded asset ${asset.name} (${asset.hash}) was corrupted!")

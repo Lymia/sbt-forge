@@ -14,7 +14,7 @@ publishArtifact in Test := false
 
 pomIncludeRepository := { x => false }
 
-scalaVersion := "2.10.4"
+scalaVersion := "2.12.6"
 
 resolvers += "typesafe" at "http://repo.typesafe.com/typesafe/maven-releases/"
 
@@ -26,11 +26,11 @@ libraryDependencies += "com.github.jponge" % "lzma-java" % "1.2"
 
 libraryDependencies += "com.nothome" % "javaxdelta" % "2.0.1"
 
-libraryDependencies += "com.typesafe.play" %% "play-json" % "2.3.4"
+libraryDependencies += "com.typesafe.play" %% "play-json" % "2.6.10"
 
-libraryDependencies += "com.google.guava" % "guava" % "18.0"
+libraryDependencies += "com.google.guava" % "guava" % "26.0-jre"
 
-libraryDependencies += "com.mojang" % "authlib" % "1.5.17"
+libraryDependencies += "com.mojang" % "authlib" % "1.5.25"
 
 scalacOptions ++= Seq("-Xlint", "-feature")
 

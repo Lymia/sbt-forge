@@ -1,18 +1,16 @@
-package moe.lymia.sbt.forge
+package moe.lymia.forge
 
-import sbt._
-import asm._
-import mapping._
-
-import java.util.Properties
 import java.io.InputStream
+import java.util.Properties
 
-import org.objectweb.asm._
+import asm._
 import org.objectweb.asm.Opcodes._
+import org.objectweb.asm._
 import org.objectweb.asm.tree._
 import play.api.libs.json._
+import sbt._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
 object Exceptor {
@@ -33,7 +31,7 @@ object Exceptor {
                                          (l \ "outer_class").asOpt[String].orNull,
                                          (l \ "inner_name").asOpt[String].orNull,
                                          (l \ "access").asOpt[String].map(x => Integer.parseInt(x, 16)).getOrElse(0))
-            cn.innerClasses += icn
+            cn.innerClasses.add(icn)
           }}
         case None => log.warn("Exceptor contains inner class definitions for class "+name+
                               ", but that class does not exist in the processed jar.")
@@ -63,10 +61,10 @@ object Exceptor {
     val endNode = getEndNode(mn)
     val isMethod = (mn.access & ACC_STATIC) == 0
     val params = paramNames.zip(Type.getArgumentTypes(mn.desc).map(_.getDescriptor))
-    mn.localVariables = new ArrayBuffer[LocalVariableNode]
+    mn.localVariables = new ArrayBuffer[LocalVariableNode].asJava
     var indexPos = 0
     for((name, t) <- if(isMethod) ("this", "L"+name+";") +: params else params) {
-      mn.localVariables += new LocalVariableNode(name, t, null, startNode, endNode, indexPos)
+      mn.localVariables.add(new LocalVariableNode(name, t, null, startNode, endNode, indexPos))
       indexPos += (if(t == "J" || t == "Q") 2 else 1)
     }
   }
@@ -80,7 +78,7 @@ object Exceptor {
 
     val prop = new Properties()
     prop.load(in)
-    for((key, value) <- prop) key match {
+    for((key, value) <- prop.asScala) key match {
       case accessRegex(className, methodName, desc) =>
         getMethod(className, methodName, desc) match {
           case Some(mn) =>
@@ -98,7 +96,7 @@ object Exceptor {
         getMethod(className, methodName, desc) match {
           case Some(mn) =>
             val funcValueRegex(exceptionString, parameters) = value
-            if(exceptionString != "") mn.exceptions ++= exceptionString.split(",").map(_.replace(".", "/"))
+            if(exceptionString != "") mn.exceptions.asScala ++= exceptionString.split(",").map(_.replace(".", "/"))
             if(parameters != "") addParameters(className, mn, parameters.split(","))
           case None => log.warn("Exceptor definition defines exception information for "+className+"."+methodName+desc+
                                 ", but method was not found in input jar.")
@@ -122,8 +120,8 @@ object Exceptor {
 
   def stripSynthetic(inputJar: JarData) {
     for((_, cn) <- inputJar.classes) if(cn.superName != "java/lang/Enum") {
-      for(mn <- cn.methods) mn.access = mn.access & ~ACC_SYNTHETIC
-      for(fn <- cn.fields ) fn.access = fn.access & ~ACC_SYNTHETIC
+      for(mn <- cn.methodMap.values) mn.access = mn.access & ~ACC_SYNTHETIC
+      for(fn <- cn.fieldMap .values) fn.access = fn.access & ~ACC_SYNTHETIC
     }
   }
 }

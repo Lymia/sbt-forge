@@ -24,31 +24,35 @@ THE SOFTWARE.
 
 package moe.lymia.sbt
 
+import sbt.Keys._
 import sbt._
+import sbt.plugins.JvmPlugin
 
-import Keys._
-import scala.util.Properties
 import scala.language.postfixOps
+import scala.util.Properties
 
-object LWJGLSupport extends Plugin {
-  object lwjgl {
-    val version = SettingKey[String]("lwjgl-version")
+object LWJGLPlugin extends AutoPlugin {
+  object autoImport {
+    object lwjgl {
+      val version = SettingKey[String]("lwjgl-version")
 
-    val copyDir = SettingKey[File]("lwjgl-copy-directory", 
-      "This is where lwjgl resources will be copied")
+      val copyDir = SettingKey[File]("lwjgl-copy-directory",
+        "This is where lwjgl resources will be copied")
 
-    val os = SettingKey[(String, String)]("lwjgl-os", 
-      "This is the targeted OS for the build. Defaults to the running OS.")
+      val os = SettingKey[(String, String)]("lwjgl-os",
+        "This is the targeted OS for the build. Defaults to the running OS.")
 
-    val org = SettingKey[String]("lwjgl-org",
-      "Custom lwjgl maven organization.")
+      val org = SettingKey[String]("lwjgl-org",
+        "Custom lwjgl maven organization.")
 
-    val nativesJarName = SettingKey[String]("lwjgl-natives-jar-name",
-      "This name will be used to pull the specific jar for loading the runtime.")
+      val nativesJarName = SettingKey[String]("lwjgl-natives-jar-name",
+        "This name will be used to pull the specific jar for loading the runtime.")
 
-    val copyNatives = TaskKey[Seq[File]]("lwjgl-copy-natives", 
-      "Copies the lwjgl library from natives jar to target")
+      val copyNatives = TaskKey[Seq[File]]("lwjgl-copy-natives",
+        "Copies the lwjgl library from natives jar to target")
+    }
   }
+  import autoImport.lwjgl
 
   // Helper methods 
   def defineOs = System.getProperty("os.name").toLowerCase.take(3).toString match {
@@ -75,7 +79,8 @@ object LWJGLSupport extends Plugin {
     }
   }
 
-  lazy val lwjglSettings: Seq[Setting[_]] = Seq (
+  override def requires = JvmPlugin
+  override def projectSettings = Seq (
     lwjgl.org := "org.lwjgl.lwjgl",
 
     libraryDependencies += lwjgl.org.value % "lwjgl" % lwjgl.version.value,
@@ -83,7 +88,7 @@ object LWJGLSupport extends Plugin {
     libraryDependencies += lwjgl.org.value % "lwjgl-platform" % lwjgl.version.value
                            classifier s"natives-${lwjgl.os.value._1}",
 
-    lwjgl.version := "2.9.4",
+    lwjgl.version := "2.9.1",
 
     lwjgl.nativesJarName := s"lwjgl-platform-${lwjgl.version.value}-natives-${lwjgl.os.value._1}",
 

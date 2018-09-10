@@ -1,17 +1,17 @@
-package moe.lymia.sbt.forge
+package moe.lymia.forge
 
-import sbt._
 import java.io._
-import java.util
+import java.util.ArrayList
 import java.util.jar._
 
 import org.objectweb.asm._
 import org.objectweb.asm.tree._
+import sbt._
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable.HashMap
 import scala.collection.mutable
-import language._
+import scala.collection.mutable.HashMap
+import scala.language._
 
 object asm {
   private class MapWrapperSeq[A, B](map: mutable.LinkedHashMap[A, B]) extends Seq[B] {
@@ -26,33 +26,33 @@ object asm {
   }
   implicit object MethodAnnotationContainer extends AnnotationContainer[MethodNode] {
     override def visibleAnnotations(mn: MethodNode) = {
-      if (mn.visibleAnnotations == null) mn.visibleAnnotations = new util.ArrayList[AnnotationNode]
+      if (mn.visibleAnnotations == null) mn.visibleAnnotations = new ArrayList[AnnotationNode]
       mn.visibleAnnotations.asScala
     }
     override def invisibleAnnotations(mn: MethodNode) = {
-      if (mn.invisibleAnnotations == null) mn.invisibleAnnotations = new util.ArrayList[AnnotationNode]
+      if (mn.invisibleAnnotations == null) mn.invisibleAnnotations = new ArrayList[AnnotationNode]
       mn.invisibleAnnotations.asScala
     }
   }
   implicit object FieldAnnotationContainer extends AnnotationContainer[FieldNode] {
     override def visibleAnnotations(fn: FieldNode) = {
-      if (fn.visibleAnnotations == null) fn.visibleAnnotations = new util.ArrayList[AnnotationNode]
+      if (fn.visibleAnnotations == null) fn.visibleAnnotations = new ArrayList[AnnotationNode]
       fn.visibleAnnotations.asScala
     }
     override def invisibleAnnotations(fn: FieldNode) = {
-      if (fn.invisibleAnnotations == null) fn.invisibleAnnotations = new util.ArrayList[AnnotationNode]
+      if (fn.invisibleAnnotations == null) fn.invisibleAnnotations = new ArrayList[AnnotationNode]
       fn.invisibleAnnotations.asScala
     }
   }
   implicit object ClassAnnotationContainer extends AnnotationContainer[ClassNodeWrapper] {
     override def visibleAnnotations(cn: ClassNodeWrapper) = {
       if (cn.classNode.visibleAnnotations == null)
-        cn.classNode.visibleAnnotations = new util.ArrayList[AnnotationNode]
+        cn.classNode.visibleAnnotations = new ArrayList[AnnotationNode]
       cn.classNode.visibleAnnotations.asScala
     }
     override def invisibleAnnotations(cn: ClassNodeWrapper) = {
       if (cn.classNode.invisibleAnnotations == null)
-        cn.classNode.invisibleAnnotations = new util.ArrayList[AnnotationNode]
+        cn.classNode.invisibleAnnotations = new ArrayList[AnnotationNode]
       cn.classNode.invisibleAnnotations.asScala
     }
   }
