@@ -26,8 +26,6 @@ package moe.lymia.sbt
 
 import sbt._
 
-import java.io.FileNotFoundException
-
 import Keys._
 import scala.util.Properties
 import scala.language.postfixOps
@@ -52,51 +50,6 @@ object LWJGLSupport extends Plugin {
       "Copies the lwjgl library from natives jar to target")
   }
 
-  // Define Tasks
-  private def lwjglCopyTask: Def.Initialize[Task[Seq[File]]] =
-    (streams, lwjgl.copyDir, lwjgl.org, lwjgl.nativesJarName, lwjgl.os, ivyPaths) map { 
-      (s, dir, org, jarName, dos, ivys) =>
-      val (tos, ext) = dos
-      val endness = Properties
-        .propOrNone("os.arch")
-        .filter(_.contains("64"))
-        .map(_ => "64")
-        .getOrElse("")
-
-      s.log.info("Copying files for %s%s" format(tos, endness))
-
-      val target = dir / tos
-      s.log.debug("Target directory: %s" format target)
-
-      if (target.exists) {
-        s.log.info("Skipping because of existence: %s" format(target))
-        Nil
-      } else {
-        val nativeLocation = pullNativeJar(org, jarName, ivys.ivyHome)
-
-        if (nativeLocation.exists) {
-          s.log.debug("Natives found at %s" format nativeLocation)
-          val filter = new SimpleFilter(_.endsWith(ext))
-          s.log.debug("Unzipping files ending with %s" format ext)
-
-          IO.unzip(nativeLocation, target.asFile, filter)
-
-          // House keeping - to be used in old method
-          (target / tos * "*").get foreach { f =>
-            IO.copyFile(f, target / f.name)
-          }
-
-          // Return the managed LWJGL resources
-          target * "*" get
-        } else {
-          s.log.warn("""|You do not have the LWJGL natives installed %s.
-                        |Consider requiring LWJGL through LWJGLPlugin.lwjglSettings and running
-                        |again.""".stripMargin.format(nativeLocation))
-          Nil
-        }
-      }
-    }
-
   // Helper methods 
   def defineOs = System.getProperty("os.name").toLowerCase.take(3).toString match {
     case "lin" => ("linux", "so")
@@ -115,9 +68,9 @@ object LWJGLSupport extends Plugin {
     val jarBase = base / "cache" / org / "lwjgl-platform" / "jars"
     val jars = jarBase * "*.jar"
 
-    jars.get.filter(correct).headOption.getOrElse {
+    jars.get.find(correct).getOrElse {
       throw new java.io.FileNotFoundException(
-        "No Natives found in: %s" format(jarBase)
+        s"No Natives found in: $jarBase"
       )
     }
   }
@@ -125,32 +78,68 @@ object LWJGLSupport extends Plugin {
   lazy val lwjglSettings: Seq[Setting[_]] = Seq (
     lwjgl.org := "org.lwjgl.lwjgl",
 
-    libraryDependencies <++=
-      (lwjgl.version, lwjgl.org, lwjgl.os) { 
-        (v, org, os) => Seq(
-          org % "lwjgl" % v, 
-          org % "lwjgl_util" % v,
-          org % "lwjgl-platform" % v classifier "natives-" + (os._1)
-        )
-      },
+    libraryDependencies += lwjgl.org.value % "lwjgl" % lwjgl.version.value,
+    libraryDependencies += lwjgl.org.value % "lwjgl_util" % lwjgl.version.value,
+    libraryDependencies += lwjgl.org.value % "lwjgl-platform" % lwjgl.version.value
+                           classifier s"natives-${lwjgl.os.value._1}",
 
-    lwjgl.version := "2.9.1",
+    lwjgl.version := "2.9.4",
 
-    lwjgl.nativesJarName <<= (lwjgl.version, lwjgl.os) {
-      "lwjgl-platform-" + _ + "-natives-" + _._1
-    },
+    lwjgl.nativesJarName := s"lwjgl-platform-${lwjgl.version.value}-natives-${lwjgl.os.value._1}",
 
     lwjgl.os := defineOs,
-    lwjgl.copyDir <<= (target) (_ / "lwjgl-natives"),
+    lwjgl.copyDir := target.value / "lwjgl-natives",
 
-    lwjgl.copyNatives <<= lwjglCopyTask,
-    (run in Runtime) <<= (run in Runtime) dependsOn lwjgl.copyNatives,
+    lwjgl.copyNatives := {
+      val log = streams.value.log
+      val (osName, nativeLibExtension) = lwjgl.os.value
 
-    cleanFiles <+= lwjgl.copyDir,
+      val bits =
+        Properties
+        .propOrNone("os.arch")
+        .filter(_.contains("64"))
+        .map(_ => "64")
+        .getOrElse("")
+
+      log.info(s"Copying files for $osName$bits")
+
+      val target = lwjgl.copyDir.value / osName
+      log.debug(s"Target directory: $target")
+
+      if (target.exists) {
+        log.info(s"Skipping because of existence: $target")
+        Nil
+      } else {
+        val nativeLocation = pullNativeJar(lwjgl.org.value, lwjgl.nativesJarName.value, ivyPaths.value.ivyHome)
+
+        if (nativeLocation.exists) {
+          log.debug("Natives found at %s" format nativeLocation)
+          val filter = new SimpleFilter(_.endsWith(nativeLibExtension))
+          log.debug("Unzipping files ending with %s" format nativeLibExtension)
+
+          IO.unzip(nativeLocation, target.asFile, filter)
+
+          // House keeping - to be used in old method
+          (target / osName * "*").get foreach { f =>
+            IO.copyFile(f, target / f.name)
+          }
+
+          // Return the managed LWJGL resources
+          target * "*" get
+        } else {
+          log.warn(
+            s"""You do not have the LWJGL natives installed $nativeLocation.
+               |Consider requiring LWJGL through LWJGLPlugin.lwjglSettings and running
+               |again.""".stripMargin)
+          Nil
+        }
+      }
+    },
+    (run in Runtime) := ((run in Runtime) dependsOn lwjgl.copyNatives).evaluated,
+
+    cleanFiles += lwjgl.copyDir.value,
 
     fork := true,
-    javaOptions <+= (lwjgl.copyDir, lwjgl.os).map{ (dir, os) => 
-      "-Dorg.lwjgl.librarypath=%s".format(dir / os._1)
-    }
+    javaOptions += s"-Dorg.lwjgl.librarypath=${lwjgl.copyDir.value / lwjgl.os.value._1}"
   )
 }

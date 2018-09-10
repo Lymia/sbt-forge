@@ -14,6 +14,8 @@ import forge.mapping._
 import language._
 
 // TODO: Remove mcBaseVersion, and instead load the MCP versions.json file.
+// TODO: Put all the default URLs, etc into its own file.
+// TODO: Infer default Scala and LWJGL version from .json files
 
 object ForgePlugin extends Plugin {
   object forge { 
@@ -152,10 +154,8 @@ object ForgePlugin extends Plugin {
   }
 
   object forgeHelpers {
-    def defaultDownloadUrl(section: String) =
-      forge.fullVersion map { ver =>
-        s"http://files.minecraftforge.net/maven/net/minecraftforge/forge/$ver/forge-$ver-$section.jar"
-      }
+    def defaultDownloadUrl(ver: String, section: String) =
+      s"http://files.minecraftforge.net/maven/net/minecraftforge/forge/$ver/forge-$ver-$section.jar"
 
     def copyUrl(target: File, source: String, log: Logger, verb: String) = {
       if(!target.exists) {
@@ -244,8 +244,8 @@ object ForgePlugin extends Plugin {
     // Download needed files
     forge.clientDownloadUrl    := VersionManager.getClientDownloadUrl(forge.versionsDir.value, forge.mcVersion.value),
     forge.serverDownloadUrl    := VersionManager.getServerDownloadUrl(forge.versionsDir.value, forge.mcVersion.value),
-    forge.universalDownloadUrl <<= defaultDownloadUrl("universal"),
-    forge.userdevDownloadUrl   <<= defaultDownloadUrl("userdev"),
+    forge.universalDownloadUrl := defaultDownloadUrl(forge.fullVersion.value, "universal"),
+    forge.userdevDownloadUrl   := defaultDownloadUrl(forge.fullVersion.value, "userdev"),
     forge.srgDownloadUrl       := {
       val mcVersion = forge.mcVersion.value
       s"http://files.minecraftforge.net/maven/de/oceanlabs/mcp/mcp/$mcVersion/mcp-$mcVersion-srg.zip"
@@ -386,7 +386,7 @@ object ForgePlugin extends Plugin {
         writeJarFile(jar, new FileOutputStream(outFile))
       }
     },
-    fullClasspath in Compile <+= forge.forgeBinary,
+    fullClasspath in Compile += forge.forgeBinary.value,
 
     forge.runOptions := ForkOptions(
       connectInput = true,
@@ -433,27 +433,31 @@ object ForgePlugin extends Plugin {
       }.mkString(", ")
       streams.value.log.info(s"Launching with parameters: [$censoredConfig]")
 
-      toError(runner.run(
+      runner.run(
         "net.minecraft.launchwrapper.Launch",
         (dependencyClasspath in Runtime).value.map(_.data) :+ forge.forgeBinary.value,
         fullConfig,
         streams.value.log
-      ))
+      ) foreach sys.error
     },
     forge.runServer in Runtime := {
       val runner = new ForkRun(forge.runOptions.value)
-      toError(runner.run(
+      runner.run(
         "net.minecraftforge.fml.relauncher.ServerLaunchWrapper",
         (dependencyClasspath in Runtime).value.map(_.data) :+ forge.forgeBinary.value,
         Seq(),
         streams.value.log
-      ))
+      ) foreach sys.error
     },
 
-    forge.runClient in Runtime <<= (forge.runClient in Runtime) dependsOn
-      (Keys.`package` in Compile, forge.prepareRunDir, lwjgl.copyNatives, forge.downloadAssets),
-    forge.runServer in Runtime <<= (forge.runServer in Runtime) dependsOn
-      (Keys.`package` in Compile, forge.prepareRunDir),
+    forge.runClient in Runtime := (
+      (forge.runClient in Runtime) dependsOn
+        (Keys.`package` in Compile, forge.prepareRunDir, lwjgl.copyNatives, forge.downloadAssets)
+    ).evaluated,
+    forge.runServer in Runtime := (
+      (forge.runServer in Runtime) dependsOn
+        (Keys.`package` in Compile, forge.prepareRunDir)
+    ).evaluated,
 
     forge.cleanCache := IO.delete(forge.cacheRoot.value),
     cleanKeepFiles ++= (if(forge.cleanLtCache.value) Seq() else Seq(forge.ltCacheDir.value)),
