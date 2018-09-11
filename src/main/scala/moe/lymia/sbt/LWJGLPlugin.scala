@@ -36,6 +36,9 @@ object LWJGLPlugin extends AutoPlugin {
     object lwjgl {
       val version = SettingKey[String]("lwjgl-version")
 
+      val libraries = SettingKey[Seq[ModuleID]]("lwjgl-libraries",
+        "A list of lwjgl libraries.")
+
       val copyDir = SettingKey[File]("lwjgl-copy-directory",
         "This is where lwjgl resources will be copied")
 
@@ -79,14 +82,16 @@ object LWJGLPlugin extends AutoPlugin {
     }
   }
 
-  override def requires = JvmPlugin
-  override def projectSettings = Seq (
+  override val requires = JvmPlugin
+  override lazy val projectSettings = Seq (
     lwjgl.org := "org.lwjgl.lwjgl",
 
-    libraryDependencies += lwjgl.org.value % "lwjgl" % lwjgl.version.value,
-    libraryDependencies += lwjgl.org.value % "lwjgl_util" % lwjgl.version.value,
-    libraryDependencies += lwjgl.org.value % "lwjgl-platform" % lwjgl.version.value
-                           classifier s"natives-${lwjgl.os.value._1}",
+    lwjgl.libraries := Seq(
+      lwjgl.org.value % "lwjgl" % lwjgl.version.value,
+      lwjgl.org.value % "lwjgl_util" % lwjgl.version.value,
+      lwjgl.org.value % "lwjgl-platform" % lwjgl.version.value classifier s"natives-${lwjgl.os.value._1}",
+    ),
+    allDependencies ++= lwjgl.libraries.value,
 
     lwjgl.version := "2.9.1",
 

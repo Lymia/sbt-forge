@@ -23,6 +23,13 @@ import scala.sys.process._
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
+    // Configurations
+    val ForgeBuild = config("ForgeBuild") extend Default describedAs
+      "A configuration used to build Forge binaries."
+    val ForgeRun = config("ForgeRun") extend Default describedAs
+      "A configuration used to run Forge."
+
+    // Task/setting/input keys
     object forge {
       // User setting keys
       val mcBaseVersion = SettingKey[String]("forge-minecraft-base-version",
@@ -108,10 +115,12 @@ object BaseForgePlugin extends AutoPlugin {
         "The access transformer used by Minecraft Forge itself.")
 
       // Load forge's dependency .json file
-      val excludedOrganizations      = SettingKey[Set[String]]("forge-excluded-organizations",
+      val excludedOrganizations         = SettingKey[Set[String]]("forge-excluded-organizations",
         "Organizations excluded from dependency autoloading")
-      val minecraftProvidedLibraries = TaskKey[Seq[ModuleID]]("forge-minecraft-provided-libraries",
-        "Libraries expected to be provided from Minecraft or Forge")
+      val minecraftAllProvidedLibraries = TaskKey[Seq[ModuleID]]("forge-all-minecraft-provided-libraries",
+        "Libraries expected to be provided from Minecraft or Forge.")
+      val minecraftProvidedLibraries    = TaskKey[Seq[ModuleID]]("forge-minecraft-provided-libraries",
+        "Libraries expected to be provided from Minecraft or Forge, except those specified in excludedOrganizations.")
 
       // Patch and merge client .jars
       val serverDepPrefixes = TaskKey[Seq[String]]("forge-server-dep-prefixes",
@@ -152,7 +161,7 @@ object BaseForgePlugin extends AutoPlugin {
         "Cleans sbt-forge's long term cache")
     }
   }
-  import autoImport.forge
+  import autoImport._
 
   object forgeHelpers {
     def defaultDownloadUrl(ver: String, section: String) =
@@ -185,8 +194,8 @@ object BaseForgePlugin extends AutoPlugin {
       }
       outFile
     }
-    def patchJarTask(task: TaskKey[File],
-                     inputTask: TaskKey[File], outputName: String, patchSection: String) =
+    def patchJarTask(task: TaskKey[File], inputTask: TaskKey[File],
+                     outputName: String, patchSection: String) =
       task := {
         val (log, binpatches, input) = (streams.value.log, forge.binpatches.value, inputTask.value)
         cachedFile(forge.forgeDir.value / outputName) { outFile =>
@@ -223,8 +232,34 @@ object BaseForgePlugin extends AutoPlugin {
   }
   import forgeHelpers._
 
-  override def requires = LWJGLPlugin
-  override def projectSettings = Seq(
+  // Initialize Forge scopes
+  private lazy val depsFromJar: Seq[Def.Setting[_]] = Seq(
+    forge.minecraftProvidedLibraries := forge.minecraftAllProvidedLibraries.value
+      .filter(x => !forge.excludedOrganizations.value.contains(x.organization)),
+    allDependencies ++= forge.minecraftProvidedLibraries.value,
+  )
+
+  private lazy val forgeCommon: Seq[Def.Setting[_]] = Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
+    allDependencies := Seq(),
+    allDependencies ++= lwjgl.libraries.value,
+
+    // We don't actually have any proper products. We use Classpaths only for downloading Maven dependencies.
+    products := Seq(),
+    exportedProducts := Seq(),
+    exportedProductsIfMissing := Seq(),
+    exportedProductsNoTracking := Seq(),
+    exportedProductJars := Seq(),
+    exportedProductJarsIfMissing := Seq(),
+    exportedProductJarsNoTracking := Seq(),
+
+    artifactPath := forge.cacheRoot.value / "artifact_path_keep_empty",
+    classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
+  ) ++ depsFromJar
+  private lazy val projectSettingsCommon =
+    depsFromJar ++ inConfig(ForgeRun)(forgeCommon) ++ inConfig(ForgeBuild)(forgeCommon)
+
+  override val requires = LWJGLPlugin
+  override lazy val projectSettings = projectSettingsCommon ++ Seq(
     forge.fullVersion  := forge.mcVersion.value + "-" + forge.version.value,
 
     forge.cacheRoot    := target.value / "sbt-forge-cache",
@@ -281,13 +316,10 @@ object BaseForgePlugin extends AutoPlugin {
     resolvers += Resolver.sonatypeRepo("releases"),
     resolvers += Resolver.sonatypeRepo("snapshots"),
 
-    forge.minecraftProvidedLibraries := (
+    forge.minecraftAllProvidedLibraries := (
       VersionManager.getLibrariesFromJson(Json.parse(IO.read(forge.dependenciesJson.value))) ++
       VersionManager.getLibraries(forge.versionsDir.value, forge.mcVersion.value)
-    ).filter(x => !forge.excludedOrganizations.value.contains(x.organization)),
-
-    // TODO: Add references to the repo versions of scala libraries.
-    allDependencies ++= forge.minecraftProvidedLibraries.value,
+    ),
 
     // Patch and merge client and server jars.
     patchJarTask(forge.patchedClientJar, forge.clientJar, "minecraft_client_patched.jar", "client"),
@@ -310,7 +342,7 @@ object BaseForgePlugin extends AutoPlugin {
     forge.accessTransformers := Seq(forge.forgeAtFile.value),
     forge.srgForgeBinary := {
       val log = streams.value.log
-      val classpath = (managedClasspath in Compile).value.map(_.data)
+      val classpath = (fullClasspath in ForgeBuild).value.map(_.data)
       val (mergedJar, universalJar) = (forge.mergedJar.value, forge.universalJar.value)
       val (srgFile, exceptorJson, excFile, accessTransformers) =
         (forge.srgFile.value, forge.exceptorJson.value, forge.excFile.value, forge.accessTransformers.value)
@@ -380,7 +412,7 @@ object BaseForgePlugin extends AutoPlugin {
     },
     forge.forgeBinary := {
       val log = streams.value.log
-      val classpath = (managedClasspath in Compile).value.map(_.data)
+      val classpath = (fullClasspath in ForgeBuild).value.map(_.data)
       val mappingCache = forge.mappingCache.value
       val srgForgeBinary = forge.srgForgeBinary.value
       val mappingArchive = forge.mappingArchive.value
@@ -397,7 +429,8 @@ object BaseForgePlugin extends AutoPlugin {
         writeJarFile(jar, new FileOutputStream(outFile))
       }
     },
-    fullClasspath in Compile += forge.forgeBinary.value,
+    unmanagedClasspath in Compile += forge.forgeBinary.value,
+    unmanagedClasspath in ForgeRun += forge.forgeBinary.value,
 
     forge.runOptions := ForkOptions()
       .withConnectInput(true)
@@ -434,7 +467,7 @@ object BaseForgePlugin extends AutoPlugin {
           "--username", "ForgeDevName",
           "--accessToken", "FML",
           "--userProperties", "{}"
-        ) else AuthManager.authenticate(forge.authCacheDir.value, args(0), streams.value.log)
+        ) else AuthManager.authenticate(forge.authCacheDir.value, args.head, streams.value.log)
 
       val fullConfig = params ++ authConfig
       val censoredConfig = fullConfig.zip("" +: fullConfig).map { t =>
@@ -445,7 +478,7 @@ object BaseForgePlugin extends AutoPlugin {
 
       runner.run(
         "net.minecraft.launchwrapper.Launch",
-        (dependencyClasspath in Runtime).value.map(_.data) :+ forge.forgeBinary.value,
+        (fullClasspath in ForgeRun).value.map(_.data) :+ forge.forgeBinary.value,
         fullConfig,
         streams.value.log
       ).get
@@ -454,9 +487,10 @@ object BaseForgePlugin extends AutoPlugin {
       val runner = new ForkRun(forge.runOptions.value)
       runner.run(
         "net.minecraftforge.fml.relauncher.ServerLaunchWrapper",
-        (dependencyClasspath in Runtime).value.map(_.data) :+ forge.forgeBinary.value,
+        (fullClasspath in ForgeRun).value.map(_.data) :+ forge.forgeBinary.value,
         Seq(),
         streams.value.log
+
       ).get
     },
 
@@ -479,7 +513,7 @@ object BaseForgePlugin extends AutoPlugin {
 object ForgePlugin_1_12_2 extends AutoPlugin {
   override def requires = BaseForgePlugin
 
-  import BaseForgePlugin.autoImport.forge
+  import BaseForgePlugin.autoImport._
 
   override def projectSettings = Seq(
     forge.mcBaseVersion := "1.12",
@@ -489,7 +523,9 @@ object ForgePlugin_1_12_2 extends AutoPlugin {
     scalaVersion := "2.11.1",
     lwjgl.version := "2.9.4-nightly-20150209",
 
-    forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.plugins", "org.lwjgl.lwjgl"),
+    forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.modules", "org.lwjgl.lwjgl"),
+    forge.excludedOrganizations in ForgeRun := Set("org.lwjgl.lwjgl"),
+    forge.excludedOrganizations in ForgeBuild := Set("org.lwjgl.lwjgl"),
     forge.serverDepPrefixes := Seq(
       "org/bouncycastle/", "org/apache/", "com/google/", "com/mojang/authlib/", "com/mojang/util/",
       "gnu/trove/", "io/netty/", "javax/annotation/", "argo/", "it/"
