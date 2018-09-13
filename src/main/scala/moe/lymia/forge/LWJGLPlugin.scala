@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
-package moe.lymia.sbt
+package moe.lymia.forge
 
 import sbt.Keys._
 import sbt._

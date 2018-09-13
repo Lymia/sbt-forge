@@ -1,17 +1,17 @@
-package moe.lymia.sbt
+package moe.lymia.forge
 
 import java.io._
 import java.net.URL
 
-import moe.lymia.forge._
-import moe.lymia.forge.asm._
-import moe.lymia.forge.launcher.MinecraftLauncher
-import moe.lymia.forge.mapping._
+import moe.lymia.forge.LWJGLPlugin.autoImport._
 import moe.lymia.forge.Utils._
-import moe.lymia.forge.build.AccessTransformer
-import moe.lymia.sbt.LWJGLPlugin.autoImport._
-import play.api.libs.json._
+import moe.lymia.forge.asm._
+import moe.lymia.forge.build._
+import moe.lymia.forge.launcher.MinecraftLauncher
+import moe.lymia.forge.mapper.Renamer
+import moe.lymia.forge.mapper.mapping._
 import org.apache.commons.io.FileUtils
+import play.api.libs.json._
 import sbt.Keys._
 import sbt.{Def, _}
 
@@ -19,6 +19,7 @@ import sbt.{Def, _}
 // TODO: Put all the default URLs, etc into its own file.
 // TODO: Kill LVTs to get rid of Mojang's snowmen.
 // TODO: Separate out access transformation into its own step, to minimize build times when changing ATs.
+// TODO: Add proper dependency tracking to the build phases.
 
 // TODO: When sbt's devs get their heads out of their rear ends, and revert the change to `.value` in lambdas, put
 //       them back where they belong.

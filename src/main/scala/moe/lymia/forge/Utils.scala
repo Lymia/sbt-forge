@@ -6,7 +6,18 @@ import java.nio.file._
 import org.apache.commons.io.{FileUtils, IOUtils}
 import sbt._
 
+import scala.collection.mutable
+
 object Utils {
+  def cachedFunction[A, B](fn: A => B) = {
+    val cache = new mutable.HashMap[A, B]
+    a: A => cache.getOrElse(a, {
+      val v = fn(a)
+      cache.put(a, v)
+      v
+    })
+  }
+
   def max[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].max(a, b)
   def min[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].min(a, b)
 

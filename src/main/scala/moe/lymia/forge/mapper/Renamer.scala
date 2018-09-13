@@ -1,22 +1,24 @@
-package moe.lymia.forge
+package moe.lymia.forge.mapper
 
 import java.io.File
 
-import asm._
-import classpath._
-import mapping._
+import moe.lymia.forge.asm._
+import moe.lymia.forge.mapper.classpath._
+import moe.lymia.forge.mapper.mapping._
+import moe.lymia.forge.Utils._
 import org.objectweb.asm.Opcodes._
+import org.objectweb.asm.commons.{Remapper, RemappingClassAdapter, RemappingMethodAdapter}
 import org.objectweb.asm._
-import org.objectweb.asm.commons._
-import sbt._
+import sbt.Logger
 
-import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.collection.JavaConverters._
 
 object Renamer {
   // Fix mapping to include inner classes included with Forge
   val splitNameRegex = """^(.*)\$([^$]+)$""".r
-  def findRemappableInnerClass(targetClasses: mutable.Map[String, ClassNodeWrapper], mapping: ForgeMapping, log: Logger) {
+  def findRemappableInnerClass(targetClasses: mutable.Map[String, ClassNodeWrapper],
+                               mapping: ForgeMapping, log: Logger) {
     for((name, cn) <- targetClasses           if  mapping.classMapping.contains(name);
         icn        <- cn.innerClasses.asScala if !mapping.classMapping.contains(icn.name) &&
                                                   icn.name.startsWith(s"$name$$")) {
@@ -38,20 +40,20 @@ object Renamer {
 
   // Method/Field resolver
   class InheritenceResolver(searcher: ClasspathSearcher) {
-    private def canOverrideFrom(owner: String, caller: String, access: Int) = 
+    private def canOverrideFrom(owner: String, caller: String, access: Int) =
       access & (ACC_PRIVATE | ACC_PROTECTED | ACC_PUBLIC) match {
         case ACC_PUBLIC | ACC_PROTECTED => true
         case 0                          => splitClassName(owner)._1 == splitClassName(caller)._1
         case ACC_PRIVATE                => false
         case _ => sys.error(s"Illegal access modifier in $owner!")
       }
-    private def checkOverrides(sub: String, sup: String, mn: MethodName) = 
+    private def checkOverrides(sub: String, sup: String, mn: MethodName) =
       searcher.resolve(sup).map(cn =>
         // TODO: Cut inheritence chain if canOverrideFrom fails
-        (if(cn.methodMap.contains(mn) && canOverrideFrom(sup, sub, cn.methodMap(mn).access)) Set(sup) 
+        (if(cn.methodMap.contains(mn) && canOverrideFrom(sup, sub, cn.methodMap(mn).access)) Set(sup)
          else Set()) ++ getOverrides(MethodSpec(sup, mn.name, mn.desc))
       ).getOrElse(Set())
-    val getOverrides: MethodSpec => Set[String] = cacheFunction { ms =>
+    val getOverrides: MethodSpec => Set[String] = cachedFunction { ms =>
       searcher.resolve(ms.owner).map(cn =>
         checkOverrides(ms.owner, cn.superName, MethodName(ms.name, ms.desc)) ++
         cn.interfaces.asScala.flatMap(i => checkOverrides(ms.owner, i, MethodName(ms.name, ms.desc)))
@@ -62,17 +64,17 @@ object Renamer {
     def isRelated(caller: String, owner: String, name: String, desc: String) =
       overrides(caller, owner, name, desc) || overrides(owner, caller, name, desc)
 
-    val resolveField: FieldSpec => Option[FieldSpec] = cacheFunction { fs =>
+    val resolveField: FieldSpec => Option[FieldSpec] = cachedFunction { fs =>
       searcher.resolve(fs.owner).flatMap { cn =>
         if(cn.fieldMap.contains(FieldName(fs.name, fs.desc))) Some(fs)
         else cn.interfaces.asScala.map(x => resolveField(FieldSpec(x, fs.name, fs.desc))).find(_.isDefined).flatten orElse
              resolveField(FieldSpec(cn.superName, fs.name, fs.desc))
       }
     }
-    val resolveMethod: MethodSpec => Option[MethodSpec] = cacheFunction { ms =>
+    val resolveMethod: MethodSpec => Option[MethodSpec] = cachedFunction { ms =>
       searcher.resolve(ms.owner).flatMap { cn =>
         if(cn.methodMap.contains(MethodName(ms.name, ms.desc))) Some(ms)
-        else resolveMethod(MethodSpec(cn.superName, ms.name, ms.desc)) orElse 
+        else resolveMethod(MethodSpec(cn.superName, ms.name, ms.desc)) orElse
              cn.interfaces.asScala.map(x => resolveMethod(MethodSpec(x, ms.name, ms.desc))).find(_.isDefined).flatten
       }
     }
@@ -92,11 +94,11 @@ object Renamer {
     }
     candidates.toMap.mapValues(_.toSet)
   }
-  private def prettySeq[T](s: Iterable[T]) = 
+  private def prettySeq[T](s: Iterable[T]) =
     if(s.isEmpty) "<nothing>"
     else if(s.tail.isEmpty) s.head.toString
     else s"[${s.map(_.toString).mkString(", ")}]"
-  def buildEquivalenceSets(methodName: String, methodDesc: String, candidates: Set[String], 
+  def buildEquivalenceSets(methodName: String, methodDesc: String, candidates: Set[String],
                            inheritence: InheritenceResolver, mapping: ForgeMapping, log: Logger) = {
     def resolve     (name: String) = mapping.methodMapping.get(MethodSpec(name, methodName, methodDesc))
     val (mapped, nonMapped) = candidates.partition(x => resolve(x).isDefined)
@@ -104,7 +106,7 @@ object Renamer {
     for(name <- mapped) equivalenceMap.addBinding(resolve(name).get, name)
 
     def mappingStep(remaining: Seq[String], mappingFunction: (String, String) => Boolean) = {
-      val (mapped, left) = remaining.map(name => 
+      val (mapped, left) = remaining.map(name =>
         (name, equivalenceMap.filter(t => t._2.exists(x => mappingFunction(x, name))).keys)).partition(_._2.nonEmpty)
       for((name, inSets) <- mapped) {
         if(inSets.size > 1) {
@@ -144,8 +146,8 @@ object Renamer {
     val renameCandidates = findRenamingCandidates(searcher, mapping, seeds, log)
     renameCandidates.foreach { t =>
       val (MethodName(name, desc), candidates) = t
-      val (noMapping, remaining, noDirectMapping, equivalenceMap) = 
-        buildEquivalenceSets(name, desc, candidates, inheritence, mapping, log) 
+      val (noMapping, remaining, noDirectMapping, equivalenceMap) =
+        buildEquivalenceSets(name, desc, candidates, inheritence, mapping, log)
       if(remaining.nonEmpty)
         log.debug(s"Classes ${prettySeq(remaining)} contain an method $name$desc, but, no relationship to remapped methods was found.")
       for((target, classes) <- equivalenceMap) {
@@ -173,7 +175,7 @@ object Renamer {
     log.info("Mapping classes...")
     val mapper = new Remapper() {
       override def map(name: String) = mapping.map(name)
-      override def mapFieldName(owner: String, name: String, desc: String) = 
+      override def mapFieldName(owner: String, name: String, desc: String) =
         inheritence.resolveField(FieldSpec(owner, name, desc)).flatMap(fs => mapping.fieldMapping.get(fs)).getOrElse(name)
       override def mapMethodName(owner: String, name: String, desc: String) =
         if(owner.startsWith("[")) name

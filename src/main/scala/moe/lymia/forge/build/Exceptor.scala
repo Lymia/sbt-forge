@@ -1,9 +1,9 @@
-package moe.lymia.forge
+package moe.lymia.forge.build
 
 import java.io.InputStream
 import java.util.Properties
 
-import asm._
+import moe.lymia.forge.asm._
 import org.objectweb.asm.Opcodes._
 import org.objectweb.asm._
 import org.objectweb.asm.tree._

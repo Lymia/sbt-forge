@@ -1,9 +1,9 @@
-package moe.lymia.forge
+package moe.lymia.forge.build
 
 import java.io._
 import java.util
 
-import asm._
+import moe.lymia.forge.asm._
 import org.objectweb.asm.tree._
 import sbt._
 

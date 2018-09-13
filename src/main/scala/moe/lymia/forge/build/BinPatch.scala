@@ -1,4 +1,4 @@
-package moe.lymia.forge
+package moe.lymia.forge.build
 
 import java.io._
 import java.util.jar._

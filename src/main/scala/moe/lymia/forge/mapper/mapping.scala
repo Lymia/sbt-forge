@@ -1,10 +1,10 @@
-package moe.lymia.forge
+package moe.lymia.forge.mapper
 
-import java.io._
+import java.io.{OutputStream, PrintStream}
 
-import moe.lymia.forge.asm._
-import org.objectweb.asm.commons._
-import sbt._
+import moe.lymia.forge.asm.{FieldName, JarData, MethodName}
+import org.objectweb.asm.commons.Remapper
+import sbt.Logger
 
 import scala.collection.mutable
 import scala.collection.mutable.HashMap
@@ -16,7 +16,7 @@ object mapping {
     case _ => (".", name)
   }
   def joinClassName(owner: String, name: String) =
-    if(owner == ".") name
+    if (owner == ".") name
     else s"$owner/$name"
 
   case class FieldSpec (owner: String, name: String, desc: String)
@@ -24,14 +24,15 @@ object mapping {
   class ForgeMapping(val packageMapping: mutable.Map[String, String]     = new HashMap[String, String],
                      val classMapping  : mutable.Map[String, String]     = new HashMap[String, String],
                      val fieldMapping  : mutable.Map[FieldSpec, String]  = new HashMap[FieldSpec, String],
-                     val methodMapping : mutable.Map[MethodSpec, String] = new HashMap[MethodSpec, String]) extends Remapper {
+                     val methodMapping : mutable.Map[MethodSpec, String] = new HashMap[MethodSpec, String]
+                    ) extends Remapper {
     override def map(name: String) = classMapping.get(name) match {
       case Some(name) => name
-      case None => 
+      case None =>
         val (owner, clname) = splitClassName(name)
         joinClassName(packageMapping.getOrElse(owner, owner), clname)
     }
-    override def mapFieldName(owner: String, name: String, desc: String) = 
+    override def mapFieldName(owner: String, name: String, desc: String) =
       sys.error("not supported")
     override def mapMethodName(owner: String, name: String, desc: String) =
       sys.error("not supported")
@@ -46,11 +47,11 @@ object mapping {
     def reverseMapping() =
       // TODO: Add check for duplicates
       new ForgeMapping(packageMapping.map(_.swap), classMapping.map(_.swap),
-                       fieldMapping .map(x => FieldSpec (map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name), 
+                       fieldMapping .map(x => FieldSpec (map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name),
                        methodMapping.map(x => MethodSpec(map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name))
-    
-    override def clone() = 
-      new ForgeMapping(packageMapping.clone(), classMapping.clone(), 
+
+    override def clone() =
+      new ForgeMapping(packageMapping.clone(), classMapping.clone(),
                        fieldMapping.clone(), methodMapping.clone())
   }
   def readCsvMappings(mapping: Seq[String]) =
@@ -124,7 +125,7 @@ object mapping {
         mapping.methodMapping.put(MethodSpec(owner, name, desc), target)
       case x => sys.error(s"Could not parse mapping line: ${x.mkString(" ")}")
     }
-    
+
     mapping.checkConsistancy()
     mapping
   }
