@@ -18,6 +18,7 @@ import sbt.{Def, _}
 // TODO: Remove mcBaseVersion, and instead load the MCP versions.json file.
 // TODO: Put all the default URLs, etc into its own file.
 // TODO: Kill LVTs to get rid of Mojang's snowmen.
+// TODO: Separate out access transformation into its own step, to minimize build times when changing ATs.
 
 // TODO: When sbt's devs get their heads out of their rear ends, and revert the change to `.value` in lambdas, put
 //       them back where they belong.
@@ -25,10 +26,8 @@ import sbt.{Def, _}
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
     // Configurations
-    val ForgeBuild = config("ForgeBuild") extend Default describedAs
+    val Forge = config("Forge") extend Default describedAs
       "A configuration used to build Forge binaries."
-    val ForgeRun = config("ForgeRun") extend Default describedAs
-      "A configuration used to run Forge."
 
     // Task/setting/input keys
     object forge {
@@ -210,7 +209,7 @@ object BaseForgePlugin extends AutoPlugin {
     allDependencies ++= forge.minecraftProvidedLibraries.value,
   )
 
-  private lazy val forgeCommon: Seq[Def.Setting[_]] = Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
+  private lazy val forgeIvyCtx: Seq[Def.Setting[_]] = Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
     allDependencies := Seq(),
     allDependencies ++= lwjgl.libraries.value,
 
@@ -227,7 +226,7 @@ object BaseForgePlugin extends AutoPlugin {
     classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
   ) ++ depsFromJar
   private lazy val projectSettingsCommon =
-    depsFromJar ++ inConfig(ForgeRun)(forgeCommon) ++ inConfig(ForgeBuild)(forgeCommon)
+    depsFromJar ++ inConfig(Forge)(forgeIvyCtx)
 
   override val requires = LWJGLPlugin
   override lazy val projectSettings = projectSettingsCommon ++ Seq(
@@ -311,14 +310,14 @@ object BaseForgePlugin extends AutoPlugin {
 
     // Process jars to merged SRG Forge binary
     forge.accessTransformers := Seq(),
-    forge.accessTransformers in ForgeBuild := forge.accessTransformers.value :+ forge.forgeAtFile.value,
+    forge.accessTransformers in Forge := forge.accessTransformers.value :+ forge.forgeAtFile.value,
     forge.srgForgeBinary := {
       val log = streams.value.log
-      val classpath = (fullClasspath in ForgeBuild).value.map(_.data)
+      val classpath = (fullClasspath in Forge).value.map(_.data)
       val (mergedJar, universalJar) = (forge.mergedJar.value, forge.universalJar.value)
       val (srgFile, exceptorJson, excFile) =
         (forge.srgFile.value, forge.exceptorJson.value, forge.excFile.value)
-      val accessTransformers = (forge.accessTransformers in ForgeBuild).value
+      val accessTransformers = (forge.accessTransformers in Forge).value
       cachedFile(forge.forgeDir.value / "forgeBin_srg.jar") { outFile =>
         val minecraftNotch = loadJarFile(new FileInputStream(mergedJar))
         val forgeNotch = loadJarFile(new FileInputStream(universalJar))
@@ -385,7 +384,7 @@ object BaseForgePlugin extends AutoPlugin {
     },
     forge.forgeBinary := {
       val log = streams.value.log
-      val classpath = (fullClasspath in ForgeBuild).value.map(_.data)
+      val classpath = (fullClasspath in Forge).value.map(_.data)
       val mappingCache = forge.mappingCache.value
       val srgForgeBinary = forge.srgForgeBinary.value
       val mappingArchive = forge.mappingArchive.value
@@ -403,7 +402,6 @@ object BaseForgePlugin extends AutoPlugin {
       }
     },
     unmanagedClasspath in Compile += forge.forgeBinary.value,
-    unmanagedClasspath in ForgeRun += forge.forgeBinary.value,
 
     // Launcher bindings
     forge.modClasspath := Seq(),
@@ -431,7 +429,7 @@ object BaseForgePlugin extends AutoPlugin {
                                                                forge.mcVersion.value, streams.value.log)
       runner.run(
         "net.minecraft.launchwrapper.Launch",
-        (fullClasspath in ForgeRun).value.map(_.data),
+        (fullClasspath in Forge).value.map(_.data) :+ forge.forgeBinary.value,
         forgeArgs ++ launcherArgs,
         streams.value.log
       ).get
@@ -443,7 +441,7 @@ object BaseForgePlugin extends AutoPlugin {
       val runner = new ForkRun(forge.runOptions.value)
       runner.run(
         "net.minecraftforge.fml.relauncher.ServerLaunchWrapper",
-        (fullClasspath in ForgeRun).value.map(_.data),
+        (fullClasspath in Forge).value.map(_.data) :+ forge.forgeBinary.value,
         Seq(),
         streams.value.log
       ).get
@@ -471,8 +469,7 @@ object ForgePlugin_1_12 extends AutoPlugin {
     lwjgl.version       := "2.9.4-nightly-20150209",
 
     forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.modules", "org.lwjgl.lwjgl"),
-    forge.excludedOrganizations in ForgeRun := Set("org.lwjgl.lwjgl"),
-    forge.excludedOrganizations in ForgeBuild := Set("org.lwjgl.lwjgl"),
+    forge.excludedOrganizations in Forge := Set("org.lwjgl.lwjgl"),
     forge.serverDepPrefixes := Seq(
       "org/bouncycastle/", "org/apache/", "com/google/", "com/mojang/authlib/", "com/mojang/util/",
       "gnu/trove/", "io/netty/", "javax/annotation/", "argo/", "it/"
