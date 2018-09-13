@@ -17,7 +17,12 @@ import sbt.{Def, _}
 
 // TODO: Remove mcBaseVersion, and instead load the MCP versions.json file.
 // TODO: Put all the default URLs, etc into its own file.
-// TODO: Kill LVTs to get rid of Mojang's snowmen.
+// TODO: Find dependencies not available in Forge for the dependency shadowing system.
+// TODO: Investigate how Ivy works in sbt on a lower level to support such.
+// TODO: Reobf and deobf of mods.
+// TODO: Work on mod dependencies system.
+// TODO: Work on artifact publishing.
+// TODO: Work on access transformer system.
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -357,6 +362,12 @@ object BaseForgePlugin extends AutoPlugin {
         Exceptor.applyExceptorJson(minecraftSrg, IO.read(exceptorJson), log)
         Exceptor.applyExcFile(minecraftSrg, new FileInputStream(mcpExcFile), log)
 
+        log.info("Removing snowmen...")
+        Exceptor.stripSnowmen(minecraftSrg)
+
+        log.info("Stripping synthetic modifiers...")
+        Exceptor.stripSynthetic(minecraftSrg)
+
         log.info("Deobfing Forge binary to SRG names...")
         val (tmpmap_forge, forgeSrg) =
           Renamer.applyMapping(forgeNotch, Seq(mergedJar), classpath, map, log)
@@ -366,9 +377,6 @@ object BaseForgePlugin extends AutoPlugin {
 
         log.info("Adding SRG parameter names...")
         Exceptor.addDefaultParameterNames(mergedBin)
-
-        log.info("Stripping synthetic modifiers...")
-        Exceptor.stripSynthetic(mergedBin)
 
         log.info("Removing patch data...")
         mergedBin.resources.remove("binpatches.pack.lzma")

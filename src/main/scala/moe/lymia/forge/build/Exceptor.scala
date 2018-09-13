@@ -105,7 +105,7 @@ object Exceptor {
     }
   }
   val srgFuncNameRegex = "func_([0-9]+)_.*".r
-  def addDefaultParameterNames(inputJar: JarData) {
+  def addDefaultParameterNames(inputJar: JarData) = {
     for((clname, cn) <- inputJar.classes;
         (MethodName(name, desc), mn) <- cn.methodMap) name match {
       case srgFuncNameRegex(id) =>
@@ -118,10 +118,20 @@ object Exceptor {
     }
   }
 
-  def stripSynthetic(inputJar: JarData) {
+  def stripSynthetic(inputJar: JarData) = {
     for((_, cn) <- inputJar.classes) if(cn.superName != "java/lang/Enum") {
       for(mn <- cn.methodMap.values) mn.access = mn.access & ~ACC_SYNTHETIC
       for(fn <- cn.fieldMap .values) fn.access = fn.access & ~ACC_SYNTHETIC
     }
   }
+
+  def stripSnowmen(inputJar: JarData) =
+    for ((_, cn) <- inputJar.classes;
+         mn <- cn.methodMap.values if mn.localVariables != null) {
+      var id = 1
+      for (lv <- mn.localVariables.asScala if lv.name == "☃") {
+        lv.name = s"var_$id"
+        id += 1
+      }
+    }
 }
