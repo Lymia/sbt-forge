@@ -4,21 +4,17 @@ name := "sbt-forge"
 
 organization := "moe.lymia"
 
-version := "0.1.0"
-
-isSnapshot := true
+version := "0.1.0-SNAPSHOT"
 
 publishMavenStyle := true
-
-publishArtifact in Test := false
-
-pomIncludeRepository := { x => false }
 
 scalaVersion := "2.12.6"
 
 resolvers += "typesafe" at "http://repo.typesafe.com/typesafe/maven-releases/"
 
 resolvers += "minecraft" at "https://libraries.minecraft.net/"
+
+libraryDependencies += "commons-io" % "commons-io" % "2.6"
 
 libraryDependencies += "org.ow2.asm" % "asm-debug-all" % "6.0_BETA"
 
@@ -30,7 +26,7 @@ libraryDependencies += "com.typesafe.play" %% "play-json" % "2.6.10"
 
 libraryDependencies += "com.google.guava" % "guava" % "26.0-jre"
 
-libraryDependencies += "com.mojang" % "authlib" % "1.5.25"
+libraryDependencies += "com.mojang" % "authlib" % "1.5.26"
 
 scalacOptions ++= Seq("-Xlint", "-feature")
 

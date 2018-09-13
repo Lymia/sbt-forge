@@ -24,7 +24,7 @@ object AccessTransformer {
     else                           mappedAccess
   }
 
-  // XXX: Support old access transformer format?
+  // TODO: Support old access transformer format?
   val methodNameRegex = """([^(]+)(\([^)]*\).*)""".r
   def applyAccessTransformers(inputJar: JarData, at: Seq[String], log: Logger) {
     def lookupClass(className: String) =
