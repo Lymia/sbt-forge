@@ -39,7 +39,7 @@ private final class MinecraftDownloader(cacheDir: File, log: Logger) {
     }.toMap
   }
   private def loadVersionInfo(version: String) =
-    Json.parse(IO.read(cachedFile(versionsDir / s"version_$version.json") { out =>
+    Json.parse(IO.read(cachedOperation(versionsDir / s"version_$version.json") { out =>
       val versionManifestString = downloadToString(MinecraftDownloader.VersionManifest, log)
       val versionManifest = parseVersionManifest(versionManifestString)
       val url = versionManifest.getOrElse(version, sys.error(s"No such Minecraft version $version exists!"))
@@ -49,7 +49,7 @@ private final class MinecraftDownloader(cacheDir: File, log: Logger) {
   private def getDownloadUrl(version: String, side: MinecraftDownloader.DownloadSide) =
     (loadVersionInfo(version) \ "downloads" \ side.name \ "url").as[String]
   def downloadBinary(version: String, side: MinecraftDownloader.DownloadSide) =
-    cachedFile(downloadsDir / s"minecraft_${side.name}_$version.jar") { out =>
+    cachedOperation(downloadsDir / s"minecraft_${side.name}_$version.jar") { out =>
       download(new URL(getDownloadUrl(version, side)), out, log)
     }
 
@@ -66,7 +66,7 @@ private final class MinecraftDownloader(cacheDir: File, log: Logger) {
       Asset(obj._1, (obj._2 \ "hash").as[String], (obj._2 \ "size").as[Long])
     }
   private def downloadAssetIndex(version: String) =
-    parseAssetIndex(cachedFile(assetsDir / "indexes" / s"$version.json") { out =>
+    parseAssetIndex(cachedOperation(assetsDir / "indexes" / s"$version.json") { out =>
       val info = loadVersionInfo(version)
       download(new URL((info \ "assetIndex" \ "url").as[String]), out, log)
     })

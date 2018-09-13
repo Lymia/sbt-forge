@@ -6,6 +6,7 @@ import java.nio.file._
 import org.apache.commons.io.{FileUtils, IOUtils}
 import sbt._
 
+import scala.collection.concurrent
 import scala.collection.mutable
 
 object Utils {
@@ -30,19 +31,6 @@ object Utils {
   def createParentDirectory(file: File) =
     createDirectories(file.getParentFile)
 
-  // TODO: Add a file lock to this.
-  def cachedFile[T](outFile: File)(task: File => T) = {
-    if(!outFile.exists) try {
-      createParentDirectory(outFile)
-      task(outFile)
-    } catch {
-      case t: Throwable =>
-        if(outFile.exists) outFile.delete()
-        throw t
-    }
-    outFile
-  }
-
   def download(url: URL, outFile: File, logger: Logger = null) = {
     if (logger != null) logger.info(s"Downloading $url to $outFile...")
     FileUtils.copyURLToFile(url, outFile)
@@ -55,4 +43,47 @@ object Utils {
   def ln(source: File, target: File) =
     Files.createSymbolicLink(Paths.get(target.getCanonicalPath),
                              Paths.get(source.getCanonicalPath))
+
+  // Caching helpers
+  private def cached(cacheDirectory: File, inStyle: FileInfo.Style = FilesInfo.lastModified,
+                     outStyle: FileInfo.Style = FilesInfo.exists)
+                    (fn: Set[File] => Set[File]) =
+    FileFunction.cached(cacheDirectory, inStyle, outStyle)(fn)
+  def trackDependencies(cacheDirectory: File, deps: Set[File],
+                        inStyle: FileInfo.Style = FilesInfo.lastModified,
+                        outStyle: FileInfo.Style = FilesInfo.exists)(fn: => File) = {
+    val cache = cached(cacheDirectory, inStyle, outStyle) { _ => Set(fn) }
+    cache(deps).head
+  }
+  def cachedTransform(cacheDirectory: File, input: File, output: File,
+                      inStyle: FileInfo.Style = FilesInfo.lastModified,
+                      outStyle: FileInfo.Style = FilesInfo.exists)(fn: (File, File) => Unit) = {
+    val cache = cached(cacheDirectory, inStyle, outStyle){ in =>
+      fn(in.head, output)
+      Set(output)
+    }
+    cache(Set(input))
+    output
+  }
+  def cachedGeneration(cacheDirectory: File, target: File, data: String) = {
+    val tempTarget = cacheDirectory / s"temp_${target.getName}"
+    IO.write(tempTarget, data)
+    cachedTransform(cacheDirectory, tempTarget, target, inStyle = FilesInfo.hash)((in, out) =>
+      IO.copyFile(in, out))
+  }
+
+  // There will be so few locks that this should be OK to leak. (We only use this for downloads currently)
+  private val LockSets = new concurrent.TrieMap[File, Object]
+  def cachedOperation[T](outFile: File)(task: File => T) =
+    LockSets.getOrElseUpdate(outFile.getCanonicalFile, new Object) synchronized {
+      if(!outFile.exists) try {
+        createParentDirectory(outFile)
+        task(outFile)
+      } catch {
+        case t: Throwable =>
+          if(outFile.exists) outFile.delete()
+          throw t
+      }
+      outFile
+    }
 }

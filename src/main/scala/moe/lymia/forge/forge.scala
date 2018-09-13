@@ -18,11 +18,6 @@ import sbt.{Def, _}
 // TODO: Remove mcBaseVersion, and instead load the MCP versions.json file.
 // TODO: Put all the default URLs, etc into its own file.
 // TODO: Kill LVTs to get rid of Mojang's snowmen.
-// TODO: Separate out access transformation into its own step, to minimize build times when changing ATs.
-// TODO: Add proper dependency tracking to the build phases.
-
-// TODO: When sbt's devs get their heads out of their rear ends, and revert the change to `.value` in lambdas, put
-//       them back where they belong.
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -47,7 +42,10 @@ object BaseForgePlugin extends AutoPlugin {
       val mappings      = SettingKey[String]("forge-mappings",
         "Mapping from SRG names to MCP names to use")
 
-      val cacheRoot     = SettingKey[File]("forge-cache-root")
+      val cacheRoot     = SettingKey[File]("forge-cache-root",
+        "The root directory where all Forge related files are cached.")
+      val depDir        = SettingKey[File]("forge-dep-dir",
+        "Directory used to store dependency tracking information")
 
       val buildDir      = SettingKey[File]("forge-build-dir",
         "Directory used to store temporary build files used by sbt-forge")
@@ -81,33 +79,37 @@ object BaseForgePlugin extends AutoPlugin {
 
       // Download needed files
       val clientJar      = TaskKey[File]("forge-client-jar",
-        "Location of the client jar. By default, downloads from Minecraft's CDN")
+        "Downloads the client jar.")
       val serverJar      = TaskKey[File]("forge-server-jar",
-        "Location of the server jar. By default, downloads from Minecraft's CDN")
+        "Downloads the server jar.")
       val universalJar   = TaskKey[File]("forge-universal-jar",
-        "Location of the Forge universal jar. By default, downloads from Forge's website")
+        "Downloads the Forge universal jar.")
       val userdevArchive = TaskKey[File]("forge-userdev-archive",
-        "Location of the Forge userdev archive. By default, downloads from Forge's website")
+        "Downloads the Forge userdev archive.")
       val srgArchive     = TaskKey[File]("forge-srg-archive",
-        "Location of the MCP SRG data archive. By default, downloads from Forge's website")
+        "Downloads the MCP SRG data archive.")
       val mappingArchive = TaskKey[File]("forge-mapping-archive",
-        "Location of the MCP mapping archive. By default, downloads from the MCPBot website")
+        "Downloads the MCP mapping archive.")
 
       // Extract files needed by later steps.
-      val dependenciesJson = TaskKey[File]("forge-dependencies-json",
-        "Location of the .json file declaring Minecraft's dependencies.")
-      val binpatches       = TaskKey[File]("forge-binpatches",
-        "Binary patches to patch Minecraft classes with.")
-      val forgeClasses     = TaskKey[File]("forge-classes",
-        "Classes added by Minecraft Forge.")
-      val srgFile          = TaskKey[File]("forge-srg-file",
-        "The .srg file used for notch->SRG deobf.")
+      val fieldsMapCsv     = TaskKey[File]("forge-fields-map-csv",
+        "Extracts the .csv file containing SRG->MCP field name mappings.")
+      val methodsMapCsv    = TaskKey[File]("forge-methods-map-csv",
+        "Extracts the .csv file containing SRG->MCP method name mappings.")
+      val paramsMapCsv     = TaskKey[File]("forge-params-map-csv",
+        "Extracts the .csv file containing SRG->MCP parameter name mappings.")
+      val mcpSrgFile       = TaskKey[File]("forge-mcp-srg-file",
+        "Extracts the .srg file used for notch->SRG deobf.")
       val exceptorJson     = TaskKey[File]("forge-exceptor-json",
-        "The .json file used to restore inner/outer class attributes to classes.")
-      val excFile          = TaskKey[File]("forge-exc-file",
-        "The .exc file used to restore exception data, and constructor parameter names to classes.")
-      val forgeAtFile          = TaskKey[File]("forge-forge-at-file",
-        "The access transformer used by Minecraft Forge itself.")
+        "Extracts the .json file used to restore inner/outer class attributes to classes.")
+      val mcpExcFile       = TaskKey[File]("forge-mcp-exc-file",
+        "Extracts the .exc file used to restore exception data, and constructor parameter names to classes.")
+      val dependenciesJson = TaskKey[File]("forge-dependencies-json",
+        "Extracts the .json file declaring Minecraft's dependencies.")
+      val binpatches       = TaskKey[File]("forge-binpatches",
+        "Extracts the binary patches to patch Minecraft classes with.")
+      val forgeAtFile      = TaskKey[File]("forge-forge-at-file",
+        "Extracts the access transformer used by Minecraft Forge itself.")
 
       // Load forge's dependency .json file
       val excludedOrganizations         = SettingKey[Set[String]]("forge-excluded-organizations",
@@ -160,35 +162,42 @@ object BaseForgePlugin extends AutoPlugin {
     def defaultDownloadUrl(ver: String, section: String) =
       s"http://files.minecraftforge.net/maven/net/minecraftforge/forge/$ver/forge-$ver-$section.jar"
 
-    def copyUrl(target: File, source: String, log: Logger, verb: String) = {
-      if(!target.exists) {
-        log.info(s"$verb $source to $target...")
-        FileUtils.copyURLToFile(new URL(source), target)
-      }
-      target
-    }
-
     def jarFileUrl(jar: File, file: String) =
       s"jar:${jar.toURI.toURL}!/$file"
 
     def patchJarTask(task: TaskKey[File], inputTask: TaskKey[File],
                      outputName: String, patchSection: String) =
       task := {
-        val (log, binpatches, input) = (streams.value.log, forge.binpatches.value, inputTask.value)
-        cachedFile(forge.forgeDir.value / outputName) { outFile =>
+        val (log, binpatches) = (streams.value.log, forge.binpatches.value)
+        val cacheDir = forge.depDir.value / s"patch-jar_${forge.version.value}_${outputName.replace('.', '-')}"
+        cachedTransform(cacheDir, inputTask.value, forge.forgeDir.value / outputName) { (input, outFile) =>
           val patchSet = BinPatch.readPatchSet(binpatches, patchSection)
           BinPatch.patchJar(input, outFile, patchSet, log)
         }
       }
 
     def extractTask(task: TaskKey[File], urlSource: TaskKey[File],
-                    sourceName: String, outputName: String, targetDir: SettingKey[File]) =
-      task := copyUrl(targetDir.value / outputName,
-                      jarFileUrl(urlSource.value, sourceName), streams.value.log, "Extracting")
+                    sourceName: String, outputName: String, isMappingBased: Boolean = false) =
+      task := {
+        val log = streams.value.log
+        val mapVersion = if (isMappingBased) s"_${forge.mappings.value}" else ""
+        val cacheDir =
+          forge.depDir.value / s"extract_${forge.version.value}${mapVersion}_${outputName.replace('.', '-')}"
+        cachedTransform(cacheDir, urlSource.value, forge.forgeDir.value / outputName) { (source, outFile) =>
+          val jarUrl = jarFileUrl(source, sourceName)
+          log.info(s"Extracting $jarUrl to $outFile")
+          FileUtils.copyURLToFile(new URL(jarUrl), outFile)
+        }
+      }
     def downloadTask(task: TaskKey[File], versionKey: SettingKey[String], urlSource: TaskKey[String],
                      outputName: String, ext: String) =
-      task := copyUrl(forge.dlCacheDir.value / s"$outputName-${versionKey.value}$ext",
-                      urlSource.value, streams.value.log, "Downloading")
+      task := {
+        val log = streams.value.log
+        val url = urlSource.value
+        cachedOperation(forge.dlCacheDir.value / s"$outputName-${versionKey.value}$ext") { outFile =>
+          download(new URL(url), outFile, log)
+        }
+      }
 
     val mappingRegex = "([^_]+)_(.+)".r
     def splitMapping(s: String) = s match {
@@ -234,6 +243,7 @@ object BaseForgePlugin extends AutoPlugin {
     forge.fullVersion  := forge.mcVersion.value + "-" + forge.version.value,
 
     forge.cacheRoot    := target.value / "sbt-forge-cache",
+    forge.depDir       := forge.cacheRoot.value / "cache-info",
 
     forge.buildDir     := forge.cacheRoot.value / "build",
     forge.forgeDir     := forge.buildDir.value / ("forge-"+forge.fullVersion.value),
@@ -271,14 +281,15 @@ object BaseForgePlugin extends AutoPlugin {
     downloadTask(forge.mappingArchive, forge.mappings     , forge.mappingDownloadUrl  , "mcp_mappings"    , ".zip"),
 
     // Extract files used in later processes
-    extractTask(forge.binpatches, forge.universalJar, "binpatches.pack.lzma", "binpatches.pack.lzma", forge.forgeDir),
-    extractTask(forge.forgeClasses, forge.userdevArchive, "classes.jar", "classes.jar", forge.forgeDir),
-
-    extractTask(forge.srgFile         , forge.srgArchive    , "joined.srg"   , "joined.srg"   , forge.forgeDir),
-    extractTask(forge.exceptorJson    , forge.srgArchive    , "exceptor.json", "exceptor.json", forge.forgeDir),
-    extractTask(forge.excFile         , forge.srgArchive    , "joined.exc"   , "joined.exc"   , forge.forgeDir),
-    extractTask(forge.dependenciesJson, forge.userdevArchive, "dev.json"     , "dev.json"     , forge.forgeDir),
-    extractTask(forge.forgeAtFile     , forge.userdevArchive, "merged_at.cfg", "merged_at.cfg", forge.forgeDir),
+    extractTask(forge.fieldsMapCsv    , forge.mappingArchive, "fields.csv"          , "mapping_fields.csv"   , true),
+    extractTask(forge.methodsMapCsv   , forge.mappingArchive, "methods.csv"         , "mapping_methods.csv"  , true),
+    extractTask(forge.paramsMapCsv    , forge.mappingArchive, "params.csv"          , "mapping_params.csv"   , true),
+    extractTask(forge.mcpSrgFile      , forge.srgArchive    , "joined.srg"          , "srg_joined.srg"       ),
+    extractTask(forge.exceptorJson    , forge.srgArchive    , "exceptor.json"       , "srg_exceptor.json"    ),
+    extractTask(forge.mcpExcFile      , forge.srgArchive    , "joined.exc"          , "srg_joined.exc"       ),
+    extractTask(forge.binpatches      , forge.universalJar  , "binpatches.pack.lzma", "binpatches.pack.lzma" ),
+    extractTask(forge.dependenciesJson, forge.userdevArchive, "dev.json"            , "userdev_dev.json"     ),
+    extractTask(forge.forgeAtFile     , forge.userdevArchive, "merged_at.cfg"       , "userdev_merged_at.cfg"),
 
     // Set up dependency resolution
     resolvers += "forge" at "http://files.minecraftforge.net/maven",
@@ -297,15 +308,18 @@ object BaseForgePlugin extends AutoPlugin {
     patchJarTask(forge.patchedServerJar, forge.serverJar, "minecraft_server_patched.jar", "server"),
     forge.mergedJar := {
       val log = streams.value.log
-      val (patchedClientJar, patchedServerJar, forgeClasses, serverDepPrefixes) =
+      val (patchedClientJar, patchedServerJar, universalJar, serverDepPrefixes) =
         (forge.patchedClientJar.value, forge.patchedServerJar.value,
-         forge.forgeClasses.value, forge.serverDepPrefixes.value)
-      cachedFile(forge.forgeDir.value / "minecraft_merged.jar") { outFile =>
+         forge.universalJar.value, forge.serverDepPrefixes.value)
+      val cacheDir = forge.depDir.value / s"merge-jar_${forge.version.value}"
+      val outFile = forge.forgeDir.value / "minecraft_merged.jar"
+      trackDependencies(cacheDir, Set(patchedClientJar, patchedServerJar, universalJar)) {
         log.info("Merging client and server binaries to "+outFile)
         writeJarFile(
-          Merger.merge(patchedClientJar, patchedServerJar, forgeClasses, serverDepPrefixes, log),
+          Merger.merge(patchedClientJar, patchedServerJar, universalJar, serverDepPrefixes, log),
           new FileOutputStream(outFile)
         )
+        outFile
       }
     },
 
@@ -314,15 +328,23 @@ object BaseForgePlugin extends AutoPlugin {
     forge.accessTransformers in Forge := forge.accessTransformers.value :+ forge.forgeAtFile.value,
     forge.srgForgeBinary := {
       val log = streams.value.log
+
       val classpath = (fullClasspath in Forge).value.map(_.data)
       val (mergedJar, universalJar) = (forge.mergedJar.value, forge.universalJar.value)
-      val (srgFile, exceptorJson, excFile) =
-        (forge.srgFile.value, forge.exceptorJson.value, forge.excFile.value)
+      val (mcpSrgFile, exceptorJson, mcpExcFile) =
+        (forge.mcpSrgFile.value, forge.exceptorJson.value, forge.mcpExcFile.value)
       val accessTransformers = (forge.accessTransformers in Forge).value
-      cachedFile(forge.forgeDir.value / "forgeBin_srg.jar") { outFile =>
+
+      val cacheDir = forge.depDir.value / s"srg-forge-binary_${forge.version.value}"
+      val deps =
+        Set(mergedJar, universalJar, mcpSrgFile, exceptorJson, mcpExcFile) ++
+        accessTransformers.toSet ++ classpath.toSet
+      val outFile = forge.forgeDir.value / "forgeBin_srg.jar"
+
+      trackDependencies(cacheDir, deps) {
         val minecraftNotch = loadJarFile(new FileInputStream(mergedJar))
         val forgeNotch = loadJarFile(new FileInputStream(universalJar))
-        val map = readSrgMapping(minecraftNotch, IO.readLines(srgFile), log)
+        val map = readSrgMapping(minecraftNotch, IO.readLines(mcpSrgFile), log)
 
         log.info("Adding mappings for Minecraft Forge inner classes")
         Renamer.findRemappableInnerClass(minecraftNotch.classes ++ forgeNotch.classes, map, log)
@@ -333,7 +355,7 @@ object BaseForgePlugin extends AutoPlugin {
 
         log.info("Restoring class attributes...")
         Exceptor.applyExceptorJson(minecraftSrg, IO.read(exceptorJson), log)
-        Exceptor.applyExcFile(minecraftSrg, new FileInputStream(excFile), log)
+        Exceptor.applyExcFile(minecraftSrg, new FileInputStream(mcpExcFile), log)
 
         log.info("Deobfing Forge binary to SRG names...")
         val (tmpmap_forge, forgeSrg) =
@@ -358,26 +380,34 @@ object BaseForgePlugin extends AutoPlugin {
 
         log.info(s"Writing merged Forge binary to $outFile")
         writeJarFile(transformedBin, new FileOutputStream(outFile))
+        outFile
       }
     },
 
     forge.mappingCache := {
       val log = streams.value.log
-      val mappingArchive = forge.mappingArchive.value
-      val srgForgeBinary = forge.srgForgeBinary.value
-      cachedFile(forge.forgeDir.value / s"srg2mcp-${forge.mappings.value}.sfmap") { outFile =>
-        log.info(s"Generating $outFile...")
-        val fieldsFile  = IO.readLinesURL(new URL(jarFileUrl(mappingArchive, "fields.csv" ))).tail
-        val methodsFile = IO.readLinesURL(new URL(jarFileUrl(mappingArchive, "methods.csv"))).tail
 
-        val map = mappingFromConfFiles(loadJarFile(new FileInputStream(srgForgeBinary)), fieldsFile, methodsFile)
+      val cacheDir = forge.depDir.value / s"mapping-cache_${forge.version.value}_${forge.mappings.value}"
+      val (fieldsFile, methodsFile) = (forge.fieldsMapCsv.value, forge.methodsMapCsv.value)
+      val srgForgeBinary = forge.srgForgeBinary.value
+      val outFile = forge.forgeDir.value / s"srg2mcp-${forge.mappings.value}.sfmap"
+
+      trackDependencies(cacheDir, Set(fieldsFile, methodsFile, srgForgeBinary)) {
+        log.info(s"Generating $outFile...")
+        val map = mappingFromConfFiles(loadJarFile(new FileInputStream(srgForgeBinary)),
+                                       IO.readLines(fieldsFile).tail, IO.readLines(methodsFile).tail)
         dumpMapping(new FileOutputStream(outFile), map)
+        outFile
       }
     },
     forge.srgToMcpMapping := {
       val log = streams.value.log
+
+      val cacheDir = forge.depDir.value / s"srg2mcp-srg_${forge.version.value}_${forge.mappings.value}"
       val mappingCache = forge.mappingCache.value
-      cachedFile(forge.forgeDir.value / s"srg2mcp-${forge.mappings.value}.srg") { outFile =>
+      val outFile = forge.forgeDir.value / s"srg2mcp-${forge.mappings.value}.srg"
+
+      cachedTransform(cacheDir, mappingCache, outFile) { (mappingCache, outFile) =>
         log.info(s"Generating $outFile...")
         val map = readMapping(IO.readLines(mappingCache))
         dumpSrgMapping(new FileOutputStream(outFile), map)
@@ -385,21 +415,27 @@ object BaseForgePlugin extends AutoPlugin {
     },
     forge.forgeBinary := {
       val log = streams.value.log
+
       val classpath = (fullClasspath in Forge).value.map(_.data)
       val mappingCache = forge.mappingCache.value
       val srgForgeBinary = forge.srgForgeBinary.value
-      val mappingArchive = forge.mappingArchive.value
-      cachedFile(forge.forgeDir.value / s"forgeBin-${forge.fullVersion.value}-${forge.mappings.value}.jar") { outFile =>
+      val paramsFile = forge.paramsMapCsv.value
+
+      val cacheDir = forge.depDir.value / s"forge-binary_${forge.version.value}_${forge.mappings.value}"
+      val deps = Set(mappingCache, srgForgeBinary, paramsFile) ++ classpath.toSet
+      val outFile = forge.forgeDir.value / s"forgeBin-${forge.fullVersion.value}-${forge.mappings.value}.jar"
+
+      trackDependencies(cacheDir, deps) {
         log.info(s"Deobfing Forge binary to MCP names at $outFile")
         val map = readMapping(IO.readLines(mappingCache))
         val (tmpmap_mcp, jar) =
           Renamer.applyMapping(loadJarFile(new FileInputStream(srgForgeBinary)), Seq(), classpath, map, log)
 
         log.info("Mapping parameter names...")
-        val paramsFile = IO.readLinesURL(new URL(jarFileUrl(mappingArchive, "params.csv"))).tail
-        Renamer.mapParams(jar, paramsFile)
+        Renamer.mapParams(jar, IO.readLines(paramsFile).tail)
 
         writeJarFile(jar, new FileOutputStream(outFile))
+        outFile
       }
     },
     unmanagedClasspath in Compile += forge.forgeBinary.value,
