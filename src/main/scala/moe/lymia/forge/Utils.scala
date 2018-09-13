@@ -7,6 +7,9 @@ import org.apache.commons.io.{FileUtils, IOUtils}
 import sbt._
 
 object Utils {
+  def max[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].max(a, b)
+  def min[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].min(a, b)
+
   def createDirectories(file: File) =
     if (!file.exists())
       if (!file.mkdirs())

@@ -8,6 +8,10 @@ version := "0.1.0-SNAPSHOT"
 
 publishMavenStyle := true
 
+publishArtifact in Test := false
+
+publishArtifact in (Compile, packageDoc) := false
+
 scalaVersion := "2.12.6"
 
 resolvers += "typesafe" at "http://repo.typesafe.com/typesafe/maven-releases/"

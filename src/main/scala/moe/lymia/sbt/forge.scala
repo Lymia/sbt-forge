@@ -8,6 +8,7 @@ import moe.lymia.forge.asm._
 import moe.lymia.forge.launcher.MinecraftLauncher
 import moe.lymia.forge.mapping._
 import moe.lymia.forge.Utils._
+import moe.lymia.forge.build.AccessTransformer
 import moe.lymia.sbt.LWJGLPlugin.autoImport._
 import play.api.libs.json._
 import org.apache.commons.io.FileUtils
@@ -16,6 +17,7 @@ import sbt.{Def, _}
 
 // TODO: Remove mcBaseVersion, and instead load the MCP versions.json file.
 // TODO: Put all the default URLs, etc into its own file.
+// TODO: Kill LVTs to get rid of Mojang's snowmen.
 
 // TODO: When sbt's devs get their heads out of their rear ends, and revert the change to `.value` in lambdas, put
 //       them back where they belong.
@@ -308,13 +310,15 @@ object BaseForgePlugin extends AutoPlugin {
     },
 
     // Process jars to merged SRG Forge binary
-    forge.accessTransformers := Seq(forge.forgeAtFile.value),
+    forge.accessTransformers := Seq(),
+    forge.accessTransformers in ForgeBuild := forge.accessTransformers.value :+ forge.forgeAtFile.value,
     forge.srgForgeBinary := {
       val log = streams.value.log
       val classpath = (fullClasspath in ForgeBuild).value.map(_.data)
       val (mergedJar, universalJar) = (forge.mergedJar.value, forge.universalJar.value)
-      val (srgFile, exceptorJson, excFile, accessTransformers) =
-        (forge.srgFile.value, forge.exceptorJson.value, forge.excFile.value, forge.accessTransformers.value)
+      val (srgFile, exceptorJson, excFile) =
+        (forge.srgFile.value, forge.exceptorJson.value, forge.excFile.value)
+      val accessTransformers = (forge.accessTransformers in ForgeBuild).value
       cachedFile(forge.forgeDir.value / "forgeBin_srg.jar") { outFile =>
         val minecraftNotch = loadJarFile(new FileInputStream(mergedJar))
         val forgeNotch = loadJarFile(new FileInputStream(universalJar))
@@ -340,6 +344,7 @@ object BaseForgePlugin extends AutoPlugin {
 
         log.info("Adding SRG parameter names...")
         Exceptor.addDefaultParameterNames(mergedBin)
+
         log.info("Stripping synthetic modifiers...")
         Exceptor.stripSynthetic(mergedBin)
 
@@ -347,13 +352,12 @@ object BaseForgePlugin extends AutoPlugin {
         mergedBin.resources.remove("binpatches.pack.lzma")
 
         log.info("Running access transformers...")
-        accessTransformers.foreach { at =>
-          log.info(s"  - ${at.getName}")
-          AccessTransformer.applyAccessTransformers(mergedBin, IO.readLines(at), log)
-        }
+        val transformer = AccessTransformer.parse(accessTransformers : _*)
+        transformer.writeTo(new File("transformer_tmp_at.cfg"))
+        val transformedBin = transformer.transformJar(mergedBin)
 
         log.info(s"Writing merged Forge binary to $outFile")
-        writeJarFile(mergedBin, new FileOutputStream(outFile))
+        writeJarFile(transformedBin, new FileOutputStream(outFile))
       }
     },
 
