@@ -39,9 +39,9 @@ object Merger {
   }
   def merge(clientPath: File, serverPath: File, classesPath: File, serverDepPrefixes: Seq[String],
             log: Logger) = {
-    val client = loadJarFile(new FileInputStream(clientPath))
-    val server = loadJarFile(new FileInputStream(serverPath))
-    val classes = loadJarFile(new FileInputStream(classesPath))
+    val client = loadJarFile(clientPath)
+    val server = loadJarFile(serverPath)
+    val classes = loadJarFile(classesPath)
     val target = new JarData()
 
     for((name, data) <- client.resources)
@@ -88,24 +88,6 @@ object Merger {
                        classes.classes.getOrElse(SideClassName, sys.error("Side not found in classes.jar")))
     target.classes.put(SideOnlyClassName,
                        classes.classes.getOrElse(SideOnlyClassName, sys.error("SideOnly not found in classes.jar")))
-
-    target
-  }
-  def addForgeClasses(minecraft: JarData, forge: JarData, log: Logger) = {
-    val target = new JarData()
-
-    for((name, data) <- minecraft.resources) target.resources.put(name, data)
-    for((name, data) <- forge.resources) {
-      if(target.resources.contains(name) && !util.Arrays.equals(target.resources(name), data))
-        log.warn("Forge overrides resource "+name+" in Minecraft binaries.")
-      target.resources.put(name, data)
-    }
-
-    for((name, cn) <- minecraft.classes) target.classes.put(name, cn.clone())
-    for((name, cn) <- forge.classes) {
-      if(target.classes.contains(name)) log.warn("Forge jar overrides class "+name+" in Minecraft binaries.")
-      target.classes.put(name, cn)
-    }
 
     target
   }

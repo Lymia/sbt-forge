@@ -84,31 +84,32 @@ sealed trait ATTarget {
   val isSynthetic = false
 }
 object ATTarget {
+  private def toJavaName(name: String) = name.replace('/', '.')
+
   case class Class(name: String) extends ATTarget {
-    override def toString = name
+    override def toString = toJavaName(name)
   }
   case class InnerClass(owner: String, name: String) extends ATTarget {
-    override def toString = s"<Inner class entry: $owner$$$name>"
+    override def toString = s"<Inner class entry: ${toJavaName(owner)}$$$name>"
     override val isSynthetic = true
   }
   case class Field(owner: String, name: String) extends ATTarget {
-    override def toString = s"$owner $name"
+    override def toString = s"${toJavaName(owner)} $name"
   }
   case class Method(owner: String, method: MethodName) extends ATTarget {
-    override def toString = s"$owner ${method.name}${method.desc}"
+    override def toString = s"${toJavaName(owner)} ${method.name}${method.desc}"
   }
   case class FieldWildcard(owner: String) extends ATTarget {
-    override def toString = s"$owner *"
+    override def toString = s"${toJavaName(owner)} *"
   }
   case class MethodWildcard(owner: String) extends ATTarget {
-    override def toString = s"$owner *()"
+    override def toString = s"${toJavaName(owner)} *()"
   }
 }
 
 case class AccessTransformer(private val transformations: Map[ATTarget, ATFlags]) {
   private def forTarget(target: ATTarget) = transformations.getOrElse(target, ATFlags.Null)
 
-  private def toJavaName(name: String) = name.replace('/', '.')
   private def transformClassAccess(name: String, access: Int) =
     forTarget(ATTarget.Class(name)).transform(access)
   private def transformInnerClassAccess(owner: String, name: String, access: Int) =
@@ -128,19 +129,19 @@ case class AccessTransformer(private val transformations: Map[ATTarget, ATFlags]
     override def visit(version: Int, access: Int, name: String,
                        signature: String, superName: String, interfaces: Array[String]) = {
       this.classNameField = name
-      super.visit(version, transformClassAccess(toJavaName(name), access), name,
+      super.visit(version, transformClassAccess(name, access), name,
                   signature, superName, interfaces)
     }
     override def visitInnerClass(name: String, outerName: String, innerName: String, access: Int) =
       super.visitInnerClass(name, outerName, innerName,
-                            transformInnerClassAccess(toJavaName(className), innerName, access))
+                            transformInnerClassAccess(className, innerName, access))
     override def visitField(access: Int, name: String, desc: String,
                             signature: String, value: Any) =
-      super.visitField(transformFieldAccess(toJavaName(className), FieldName(name, desc), access),
+      super.visitField(transformFieldAccess(className, FieldName(name, desc), access),
                        name, desc, signature, value)
     override def visitMethod(access: Int, name: String, desc: String,
                              signature: String, exceptions: Array[String]) =
-      super.visitMethod(transformMethodAccess(toJavaName(className), MethodName(name, desc), access),
+      super.visitMethod(transformMethodAccess(className, MethodName(name, desc), access),
                         name, desc, signature, exceptions)
   }
   def transformJar(jar: JarData) = jar.mapWithVisitor(this.makeVisitor)
@@ -149,26 +150,27 @@ case class AccessTransformer(private val transformations: Map[ATTarget, ATFlags]
   def writeTo(file: File) = IO.writeLines(file, "# Merged by sbt-forge" +: getAtLines)
 }
 object AccessTransformer {
+  private def toInternalName(name: String) = name.replace('.', '/')
+
   val MethodNameRegex = """([^(]+)(\([^)]*\).*)""".r
-  val InnerClassNameRegex = """(.*\.[^.]+)$([^$.]*)""".r
   private def parseLine(line: String) = {
     val trimmedLine = line.replaceAll("#.*", "").trim
     if (trimmedLine.isEmpty) Nil
     else trimmedLine.split(" +") match {
       case Array(access, className, "*()") =>
-        Seq((ATTarget.MethodWildcard(className), ATFlags(access)))
+        Seq((ATTarget.MethodWildcard(toInternalName(className)), ATFlags(access)))
       case Array(access, className, "*") =>
-        Seq((ATTarget.FieldWildcard(className), ATFlags(access)))
+        Seq((ATTarget.FieldWildcard(toInternalName(className)), ATFlags(access)))
       case Array(access, className, MethodNameRegex(methodName, methodDesc)) =>
-        Seq((ATTarget.Method(className, MethodName(methodName, methodDesc)), ATFlags(access)))
+        Seq((ATTarget.Method(toInternalName(className), MethodName(methodName, methodDesc)), ATFlags(access)))
       case Array(access, className, fieldName) =>
-        Seq((ATTarget.Field(className, fieldName), ATFlags(access)))
+        Seq((ATTarget.Field(toInternalName(className), fieldName), ATFlags(access)))
       case Array(access, InnerClassNameRegex(outerName, innerName)) =>
         val transformation = ATFlags(access)
-        Seq((ATTarget.Class(s"$outerName$$$innerName"), transformation),
-            (ATTarget.InnerClass(outerName, innerName), transformation))
+        Seq((ATTarget.Class(toInternalName(s"$outerName$$$innerName")), transformation),
+            (ATTarget.InnerClass(toInternalName(outerName), innerName), transformation))
       case Array(access, className) =>
-        Seq((ATTarget.Class(className), ATFlags(access)))
+        Seq((ATTarget.Class(toInternalName(className)), ATFlags(access)))
       case a => sys.error(s"Could not parse line in access transformer: ${a.mkString(" ")}")
     }
   }

@@ -1,145 +1,163 @@
 package moe.lymia.forge.mapper
 
-import java.io.{OutputStream, PrintStream}
+import java.io.{FileOutputStream, PrintStream}
 
-import moe.lymia.forge.asm.{FieldName, JarData, MethodName}
+import moe.lymia.forge.Utils._
+import moe.lymia.forge.asm._
 import org.objectweb.asm.commons.Remapper
-import sbt.Logger
+import sbt._
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable
-import scala.collection.mutable.HashMap
 
-object mapping {
-  private val classNameRegex    = "([^ ]+)/([^ /]+)".r
-  def splitClassName(name: String) = name match {
-    case classNameRegex(owner, name) => (owner, name)
-    case _ => (".", name)
-  }
-  def joinClassName(owner: String, name: String) =
-    if (owner == ".") name
-    else s"$owner/$name"
+case class FieldSpec (owner: String, name: String, desc: String)
+case class MethodSpec(owner: String, name: String, desc: String)
 
-  case class FieldSpec (owner: String, name: String, desc: String)
-  case class MethodSpec(owner: String, name: String, desc: String)
-  class ForgeMapping(val packageMapping: mutable.Map[String, String]     = new HashMap[String, String],
-                     val classMapping  : mutable.Map[String, String]     = new HashMap[String, String],
-                     val fieldMapping  : mutable.Map[FieldSpec, String]  = new HashMap[FieldSpec, String],
-                     val methodMapping : mutable.Map[MethodSpec, String] = new HashMap[MethodSpec, String]
-                    ) extends Remapper {
-    override def map(name: String) = classMapping.get(name) match {
-      case Some(name) => name
-      case None =>
-        val (owner, clname) = splitClassName(name)
-        joinClassName(packageMapping.getOrElse(owner, owner), clname)
-    }
-    override def mapFieldName(owner: String, name: String, desc: String) =
-      sys.error("not supported")
-    override def mapMethodName(owner: String, name: String, desc: String) =
-      sys.error("not supported")
-
-    // TODO Implement
-    // override def mapInvokeDynamicMethodName(name: String, desc: String) =
-
-    def checkConsistancy() = {
-      if((classMapping.values.toSet & classMapping.keySet).nonEmpty)
-        sys.error(s"Possible cycle in mappings: ${classMapping.values.toSet & classMapping.keySet}")
-    }
-    def reverseMapping() =
-      // TODO: Add check for duplicates
-      new ForgeMapping(packageMapping.map(_.swap), classMapping.map(_.swap),
-                       fieldMapping .map(x => FieldSpec (map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name),
-                       methodMapping.map(x => MethodSpec(map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name))
-
-    override def clone() =
-      new ForgeMapping(packageMapping.clone(), classMapping.clone(),
-                       fieldMapping.clone(), methodMapping.clone())
-  }
-  def readCsvMappings(mapping: Seq[String]) =
-    mapping.map(_.split(",").map(_.trim)).filter(_.length >= 2).map(a => a(0) -> a(1)).toMap
-  def mappingFromConfFiles(ref: JarData, fields: Seq[String], methods: Seq[String]) = {
-    val mapping        = new ForgeMapping()
-    val fieldMappings  = readCsvMappings(fields)
-    val methodMappings = readCsvMappings(methods)
-    for((className, cn) <- ref.classes) {
-      for((MethodName(name, desc), _) <- cn.methodMap;
-          target                      <- methodMappings.get(name))
-        mapping.methodMapping.put(MethodSpec(className, name, desc), target)
-      for((FieldName(name, desc), _) <- cn.fieldMap;
-          target                     <- fieldMappings.get(name))
-        mapping.fieldMapping.put(FieldSpec(className, name, desc), target)
-    }
-    mapping
+case class Mapping(packageMapping: Map[String, String], classMapping: Map[String, String],
+                   fieldMapping: Map[FieldSpec, String], methodMapping: Map[MethodSpec, String]) extends Remapper {
+  override def map(name: String) = classMapping.get(name) match {
+    case Some(name) => name
+    case None =>
+      val (owner, clname) = splitClassName(name)
+      joinClassName(packageMapping.getOrElse(owner, owner), clname)
   }
 
-  def readSrgMapping(ref: JarData, lines: Seq[String], log: Logger) = {
-    val mapping = new ForgeMapping()
+  def mapFieldName(fs: FieldSpec) = fieldMapping.getOrElse(fs, fs.name)
+  override def mapFieldName(owner: String, name: String, desc: String) =
+    fieldMapping.getOrElse(FieldSpec(owner, name, desc), name)
 
-    val lineRegex = "([A-Z][A-Z]): (.*)".r.anchored
-    val PK  = "([^ ]+) +([^ ]+)".r.anchored
-    val CL  = "([^ ]+) +([^ ]+)".r.anchored
-    val FD  = "([^ ]+)/([^ /]+) +([^ ]+)/([^ /]+)".r.anchored
-    val MD  = "([^ ]+)/([^ /]+) +([^ ]+) +([^ ]+)/([^ /]+) +([^ ]+)".r.anchored
-    lines.foreach {
-      case lineRegex("PK", PK(source, target)) =>
-        if(source != target) mapping.packageMapping.put(source, target)
-      case lineRegex("CL", CL(source, target)) =>
-        if(source != target) mapping.classMapping.put(source, target)
-      case lineRegex("FD", FD(sOwner, sName, _, tName)) =>
+  def mapMethodName(ms: MethodSpec) = methodMapping.getOrElse(ms, ms.name)
+  override def mapMethodName(owner: String, name: String, desc: String) =
+    methodMapping.getOrElse(MethodSpec(owner, name, desc), name)
+
+  def reverseMapping() =
+    // TODO: Add check for duplicates
+    Mapping(packageMapping.map(_.swap), classMapping.map(_.swap),
+            fieldMapping .map(x => FieldSpec (map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name),
+            methodMapping.map(x => MethodSpec(map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name))
+  def stripTrivial() =
+    Mapping(packageMapping.filter(x => x._1 != x._2), classMapping.filter(x => x._1 != x._2),
+            fieldMapping.filter(x => x._1.name != x._2), methodMapping.filter(x => x._1.name != x._2))
+
+  // Output methods
+  def writeSrgMapping(target: File) {
+    val out = new PrintStream(new FileOutputStream(target))
+    try {
+      for((source, target) <- packageMapping)
+        out.println(s"PK: $source $target")
+      for((source, target) <- classMapping)
+        out.println(s"CL: $source $target")
+      for((FieldSpec(owner, name, _), target) <- fieldMapping)
+        out.println(s"FD: $owner/$name ${map(owner)}/$target")
+      for((MethodSpec(owner, name, desc), target) <- methodMapping)
+        out.println(s"MD: $owner/$name $desc ${map(owner)}/$target ${mapMethodDesc(desc)}")
+    } finally {
+      out.close()
+    }
+  }
+  def writeCachedMapping(target: File) {
+    val out = new PrintStream(new FileOutputStream(target))
+    try {
+      out.println("# This file is generated by sbt-forge.")
+      for((source, target) <- packageMapping)
+        out.println(s"package $source -> $target")
+      for((source, target) <- classMapping  )
+        out.println(s"class $source -> $target")
+      for((FieldSpec(owner, name, desc), target) <- fieldMapping)
+        out.println(s"field $owner $name $desc -> $target")
+      for((MethodSpec(owner, name, desc), target) <- methodMapping)
+        out.println(s"method $owner $name $desc -> $target")
+    } finally {
+      out.close()
+    }
+  }
+
+  // Helper methods for various compile tasks
+  def findRemappableInnerClass(jar: JarData, log: Logger) = {
+    val newMappings = new mutable.HashMap[String, String]()
+    for((name, cn) <- jar.classes             if  classMapping.contains(name);
+        icn        <- cn.innerClasses.asScala if !classMapping.contains(icn.name) &&
+                                                  icn.name.startsWith(s"$name$$")) {
+        val newName = s"${classMapping(name)}${icn.name.substring(name.length)}"
+        log.debug(s"Adding mapping for inner class ${icn.name} to $newName")
+        newMappings.put(icn.name, newName)
+    }
+    copy(classMapping = classMapping ++ newMappings)
+  }
+
+  // Check mappings for consistancy
+  if((classMapping.values.toSet & classMapping.keySet).nonEmpty)
+    sys.error(s"Possible cycle in mappings: ${classMapping.values.toSet & classMapping.keySet}")
+}
+object Mapping {
+  private[mapper] def readCsvMappings(mapping: Seq[String]) =
+    mapping.tail.map(_.split(",").map(_.trim)).filter(_.length >= 2).map(a => a(0) -> a(1)).toMap
+
+  def readMcpMapping(ref: JarData, fieldsFile: File, methodsFile: File) = {
+    // TODO: Check for mappings defined but not used
+    val csvFieldMappings  = readCsvMappings(IO.readLines(fieldsFile))
+    val csvMethodMappings = readCsvMappings(IO.readLines(methodsFile))
+
+    val fieldMappings =
+      for ((className, cn) <- ref.classes;
+           (FieldName(name, desc), _) <- cn.fieldMap;
+           target <- csvFieldMappings.get(name)) yield (FieldSpec(className, name, desc), target)
+    val methodMappings =
+      for ((className, cn) <- ref.classes;
+           (MethodName(name, desc), _) <- cn.methodMap;
+           target <- csvMethodMappings.get(name)) yield (MethodSpec(className, name, desc), target)
+
+    Mapping(Map(), Map(), fieldMappings.toMap, methodMappings.toMap).stripTrivial()
+  }
+
+  private val SRGLineRegex = "([A-Z][A-Z]): (.*)".r.anchored
+  private val PK = "([^ ]+) +([^ ]+)".r.anchored
+  private val CL = "([^ ]+) +([^ ]+)".r.anchored
+  private val FD = "([^ ]+)/([^ /]+) +([^ ]+)/([^ /]+)".r.anchored
+  private val MD = "([^ ]+)/([^ /]+) +([^ ]+) +([^ ]+)/([^ /]+) +([^ ]+)".r.anchored
+  def readSrgMapping(ref: JarData, file: File, log: Logger) = {
+    val packageMapping = new mutable.HashMap[String, String]()
+    val classMapping   = new mutable.HashMap[String, String]()
+    val fieldMapping   = new mutable.HashMap[FieldSpec, String]()
+    val methodMapping  = new mutable.HashMap[MethodSpec, String]()
+
+    IO.readLines(file).foreach {
+      case SRGLineRegex("PK", PK(source, target)) =>
+        if(source != target) packageMapping.put(source, target)
+      case SRGLineRegex("CL", CL(source, target)) =>
+        if(source != target) classMapping.put(source, target)
+      case SRGLineRegex("FD", FD(sOwner, sName, _, tName)) =>
         ref.classes.get(sOwner) match {
           case Some(cn) =>
             for((FieldName(name, desc), _) <- cn.fieldMap if name == sName)
-              mapping.fieldMapping.put(FieldSpec(sOwner, sName, desc), tName)
+              fieldMapping.put(FieldSpec(sOwner, sName, desc), tName)
           case None => log.warn(s"FD line encountered in class $sOwner, but class was not found in reference .jar!")
         }
-      case lineRegex("MD", MD(sOwner, sName, sDesc, _, tName, _)) =>
-        if(sName != tName) mapping.methodMapping.put(MethodSpec(sOwner, sName, sDesc), tName)
+      case SRGLineRegex("MD", MD(sOwner, sName, sDesc, _, tName, _)) =>
+        if(sName != tName) methodMapping.put(MethodSpec(sOwner, sName, sDesc), tName)
       case x if x.trim == "" => // ignore empty lines
       case x => sys.error(s"Could not parse SRG line: $x")
     }
 
-    mapping.checkConsistancy()
-    mapping
-  }
-  def dumpSrgMapping(os: OutputStream, mapping: ForgeMapping) {
-    val out = new PrintStream(os)
-    for((source, target) <- mapping.packageMapping)
-      out.println(s"PK: $source $target")
-    for((source, target) <- mapping.classMapping  )
-      out.println(s"CL: $source $target")
-    for((FieldSpec(owner, name, _), target) <- mapping.fieldMapping)
-      out.println(s"FD: $owner/$name ${mapping.map(owner)}/$target")
-    for((MethodSpec(owner, name, desc), target) <- mapping.methodMapping)
-      out.println(s"MD: $owner/$name $desc ${mapping.map(owner)}/$target ${mapping.mapMethodDesc(desc)}")
-    os.close()
+    Mapping(packageMapping.toMap, classMapping.toMap, fieldMapping.toMap, methodMapping.toMap).stripTrivial()
   }
 
-  def readMapping(lines: Seq[String]) = {
-    val mapping = new ForgeMapping()
+  def readCachedMapping(file: File) = {
+    val packageMapping = new mutable.HashMap[String, String]()
+    val classMapping   = new mutable.HashMap[String, String]()
+    val fieldMapping   = new mutable.HashMap[FieldSpec, String]()
+    val methodMapping  = new mutable.HashMap[MethodSpec, String]()
 
-    lines.map(_.replaceAll("#.*", "").trim).filter(!_.isEmpty).map(_.split(" +")) foreach {
-      case Array("package", source, "->", target) => mapping.packageMapping.put(source, target)
-      case Array("class"  , source, "->", target) => mapping.classMapping  .put(source, target)
+    IO.readLines(file).map(_.trim).filter(x => !x.isEmpty && !x.startsWith("#")).map(_.split(" +")) foreach {
+      case Array("package", source, "->", target) => packageMapping.put(source, target)
+      case Array("class"  , source, "->", target) => classMapping  .put(source, target)
       case Array("field"  , owner, name, desc, "->", target) =>
-        mapping.fieldMapping .put(FieldSpec (owner, name, desc), target)
+        fieldMapping .put(FieldSpec (owner, name, desc), target)
       case Array("method" , owner, name, desc, "->", target) =>
-        mapping.methodMapping.put(MethodSpec(owner, name, desc), target)
+        methodMapping.put(MethodSpec(owner, name, desc), target)
       case x => sys.error(s"Could not parse mapping line: ${x.mkString(" ")}")
     }
 
-    mapping.checkConsistancy()
-    mapping
-  }
-  def dumpMapping(os: OutputStream, mapping: ForgeMapping) {
-    val out = new PrintStream(os)
-    out.println("# This file is generated by sbt-forge.")
-    for((source, target) <- mapping.packageMapping)
-      out.println(s"package $source -> $target")
-    for((source, target) <- mapping.classMapping  )
-      out.println(s"class $source -> $target")
-    for((FieldSpec(owner, name, desc), target) <- mapping.fieldMapping)
-      out.println(s"field $owner $name $desc -> $target")
-    for((MethodSpec(owner, name, desc), target) <- mapping.methodMapping)
-      out.println(s"method $owner $name $desc -> $target")
-    out.close()
+    Mapping(packageMapping.toMap, classMapping.toMap, fieldMapping.toMap, methodMapping.toMap).stripTrivial()
   }
 }

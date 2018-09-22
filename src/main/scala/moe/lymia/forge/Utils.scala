@@ -22,6 +22,20 @@ object Utils {
   def max[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].max(a, b)
   def min[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].min(a, b)
 
+  val InnerClassNameRegex = """(.*)$([^$.]*)""".r.anchored
+
+  private val classNameRegex = "([^ ]+)/([^ /]+)".r
+  def splitClassName(name: String) = name match {
+    case classNameRegex(owner, name) => (owner, name)
+    case _ => (".", name)
+  }
+  def joinClassName(owner: String, name: String) =
+    if (owner == ".") name
+    else s"$owner/$name"
+
+  def jarFileUrl(jar: File, file: String) =
+    new URL(s"jar:${jar.toURI.toURL}!/$file")
+
   def createDirectories(file: File) =
     if (!file.exists())
       if (!file.mkdirs())
@@ -45,8 +59,7 @@ object Utils {
                              Paths.get(source.getCanonicalPath))
 
   // Caching helpers
-  private def cached(cacheDirectory: File, inStyle: FileInfo.Style = FilesInfo.lastModified,
-                     outStyle: FileInfo.Style = FilesInfo.exists)
+  private def cached(cacheDirectory: File, inStyle: FileInfo.Style, outStyle: FileInfo.Style)
                     (fn: Set[File] => Set[File]) =
     FileFunction.cached(cacheDirectory, inStyle, outStyle)(fn)
   def trackDependencies(cacheDirectory: File, deps: Set[File],

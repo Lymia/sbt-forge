@@ -2,14 +2,14 @@ package moe.lymia.forge
 
 import java.io._
 import java.net.URL
+import java.util.Locale
 
 import moe.lymia.forge.LWJGLPlugin.autoImport._
 import moe.lymia.forge.Utils._
 import moe.lymia.forge.asm._
 import moe.lymia.forge.build._
 import moe.lymia.forge.launcher.MinecraftLauncher
-import moe.lymia.forge.mapper.Renamer
-import moe.lymia.forge.mapper.mapping._
+import moe.lymia.forge.mapper._
 import org.apache.commons.io.FileUtils
 import play.api.libs.json._
 import sbt.Keys._
@@ -22,7 +22,8 @@ import sbt.{Def, _}
 // TODO: Reobf and deobf of mods.
 // TODO: Work on mod dependencies system.
 // TODO: Work on artifact publishing.
-// TODO: Work on access transformer system.
+// TODO: Do an optimization pass over the whole codebase. Especially take a look at all the uses of regexes.
+// TODO: Deal with the memory usage of this plugin
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -147,6 +148,10 @@ object BaseForgePlugin extends AutoPlugin {
         "Cached SRG to MCP mapping used by Forge")
       val forgeBinary     = TaskKey[File]("forge-binary",
         "Forge binary remapped to MCP names")
+      val userAtName      = TaskKey[String]("forge-user-at-name",
+        "The name of the generated access transformer file to include in the final .jar.")
+      val atForgeBinary   = TaskKey[File]("forge-at-binary",
+        "Forge binary with user access transformers applied")
 
       // Run Minecraft
       val runOptions   = TaskKey[ForkOptions]("forge-run-options", "Fork options for running Minecraft")
@@ -157,8 +162,21 @@ object BaseForgePlugin extends AutoPlugin {
       val runServer    = InputKey[Unit]("run-server", "Runs the Minecraft server")
 
       // Clean all
-      val cleanCache    = TaskKey[Unit]("clean-cache",
-        "Cleans sbt-forge's long term cache")
+      val cleanCache   = TaskKey[Unit]("clean-cache", "Cleans sbt-forge's long term cache")
+    }
+
+    implicit class CurseForgeResolverExtension(resolver: Resolver.type) {
+      val CurseForgeRepositoryName = "CurseForge"
+      val CurseForgeRepositoryRoot = "https://minecraft.curseforge.com/api/maven/"
+      val CurseForgeRepository = CurseForgeRepositoryName at CurseForgeRepositoryRoot
+
+      val MinecraftRepositoryName = "Minecraft Maven repository"
+      val MinecraftRepositoryRoot = "https://libraries.minecraft.net/"
+      val MinecraftRepository = MinecraftRepositoryName at MinecraftRepositoryRoot
+
+      val MinecraftForgeRepositoryName = "Minecraft Forge Maven repository"
+      val MinecraftForgeRepositoryRoot = "http://files.minecraftforge.net/maven"
+      val MinecraftForgeRepository = MinecraftForgeRepositoryName at MinecraftForgeRepositoryRoot
     }
   }
   import autoImport._
@@ -166,9 +184,6 @@ object BaseForgePlugin extends AutoPlugin {
   object forgeHelpers {
     def defaultDownloadUrl(ver: String, section: String) =
       s"http://files.minecraftforge.net/maven/net/minecraftforge/forge/$ver/forge-$ver-$section.jar"
-
-    def jarFileUrl(jar: File, file: String) =
-      s"jar:${jar.toURI.toURL}!/$file"
 
     def patchJarTask(task: TaskKey[File], inputTask: TaskKey[File],
                      outputName: String, patchSection: String) =
@@ -191,7 +206,7 @@ object BaseForgePlugin extends AutoPlugin {
         cachedTransform(cacheDir, urlSource.value, forge.forgeDir.value / outputName) { (source, outFile) =>
           val jarUrl = jarFileUrl(source, sourceName)
           log.info(s"Extracting $jarUrl to $outFile")
-          FileUtils.copyURLToFile(new URL(jarUrl), outFile)
+          FileUtils.copyURLToFile(jarUrl, outFile)
         }
       }
     def downloadTask(task: TaskKey[File], versionKey: SettingKey[String], urlSource: TaskKey[String],
@@ -208,11 +223,6 @@ object BaseForgePlugin extends AutoPlugin {
     def splitMapping(s: String) = s match {
       case mappingRegex(channel, version) => (channel, version)
       case _ => sys.error(s"Could not parse mapping channel name: $s")
-    }
-
-    def dumpDebugMapping(debugDir: File, map: ForgeMapping, name: String) = {
-      if(!debugDir.exists) debugDir.mkdirs()
-      dumpMapping(new FileOutputStream(debugDir / name), map)
     }
   }
   import forgeHelpers._
@@ -297,10 +307,10 @@ object BaseForgePlugin extends AutoPlugin {
     extractTask(forge.forgeAtFile     , forge.userdevArchive, "merged_at.cfg"       , "userdev_merged_at.cfg"),
 
     // Set up dependency resolution
-    resolvers += "forge" at "http://files.minecraftforge.net/maven",
-    resolvers += "minecraft" at "https://libraries.minecraft.net/",
-    resolvers += Resolver.sonatypeRepo("releases"),
-    resolvers += Resolver.sonatypeRepo("snapshots"),
+    resolvers += Resolver.MinecraftForgeRepository,
+    resolvers += Resolver.MinecraftRepository,
+
+    resolvers in Forge := Seq(Resolver.MinecraftForgeRepository, Resolver.MinecraftRepository),
 
     forge.minecraftAllProvidedLibraries :=
       MinecraftLauncher.getDependencies(forge.launcherDir.value, forge.mcVersion.value,
@@ -329,8 +339,7 @@ object BaseForgePlugin extends AutoPlugin {
     },
 
     // Process jars to merged SRG Forge binary
-    forge.accessTransformers := Seq(),
-    forge.accessTransformers in Forge := forge.accessTransformers.value :+ forge.forgeAtFile.value,
+    forge.accessTransformers in Forge := Seq(forge.forgeAtFile.value),
     forge.srgForgeBinary := {
       val log = streams.value.log
 
@@ -349,42 +358,34 @@ object BaseForgePlugin extends AutoPlugin {
       trackDependencies(cacheDir, deps) {
         val minecraftNotch = loadJarFile(new FileInputStream(mergedJar))
         val forgeNotch = loadJarFile(new FileInputStream(universalJar))
-        val map = readSrgMapping(minecraftNotch, IO.readLines(mcpSrgFile), log)
-
-        log.info("Adding mappings for Minecraft Forge inner classes")
-        Renamer.findRemappableInnerClass(minecraftNotch.classes ++ forgeNotch.classes, map, log)
-
-        log.info("Deobfing merged Minecraft binary to SRG names...")
-        val (tmpmap_mc, minecraftSrg) =
-          Renamer.applyMapping(minecraftNotch, Seq(universalJar), classpath, map, log)
-
-        log.info("Restoring class attributes...")
-        Exceptor.applyExceptorJson(minecraftSrg, IO.read(exceptorJson), log)
-        Exceptor.applyExcFile(minecraftSrg, new FileInputStream(mcpExcFile), log)
 
         log.info("Removing snowmen...")
-        Exceptor.stripSnowmen(minecraftSrg)
+        Exceptor.stripSnowmen(minecraftNotch)
 
         log.info("Stripping synthetic modifiers...")
-        Exceptor.stripSynthetic(minecraftSrg)
-
-        log.info("Deobfing Forge binary to SRG names...")
-        val (tmpmap_forge, forgeSrg) =
-          Renamer.applyMapping(forgeNotch, Seq(mergedJar), classpath, map, log)
+        Exceptor.stripSynthetic(minecraftNotch)
 
         log.info("Merging Forge binary and Minecraft binary...")
-        val mergedBin = Merger.addForgeClasses(minecraftSrg, forgeSrg, log)
+        val mergedNotch = minecraftNotch.mergeWith(forgeNotch, log, newIdentity = outFile.getName)
+        val srgMap = Mapping.readSrgMapping(mergedNotch, mcpSrgFile, log)
+            .findRemappableInnerClass(mergedNotch, log)
+
+        log.info("Deobfing merged binary to SRG names...")
+        val (_, mergedSrg) =
+          Renamer.applyMapping(minecraftNotch, Seq(), classpath, srgMap, log)
+
+        log.info("Restoring class attributes...")
+        Exceptor.applyExceptorJson(mergedSrg, IO.read(exceptorJson), log)
+        Exceptor.applyExcFile(mergedSrg, new FileInputStream(mcpExcFile), log)
 
         log.info("Adding SRG parameter names...")
-        Exceptor.addDefaultParameterNames(mergedBin)
+        Exceptor.addDefaultParameterNames(mergedSrg)
 
         log.info("Removing patch data...")
-        mergedBin.resources.remove("binpatches.pack.lzma")
+        mergedSrg.resources.remove("binpatches.pack.lzma")
 
-        log.info("Running access transformers...")
-        val transformer = AccessTransformer.parse(accessTransformers : _*)
-        transformer.writeTo(new File("transformer_tmp_at.cfg"))
-        val transformedBin = transformer.transformJar(mergedBin)
+        log.info("Running Forge access transformers...")
+        val transformedBin = AccessTransformer.parse(accessTransformers : _*).transformJar(mergedSrg)
 
         log.info(s"Writing merged Forge binary to $outFile")
         writeJarFile(transformedBin, new FileOutputStream(outFile))
@@ -402,9 +403,8 @@ object BaseForgePlugin extends AutoPlugin {
 
       trackDependencies(cacheDir, Set(fieldsFile, methodsFile, srgForgeBinary)) {
         log.info(s"Generating $outFile...")
-        val map = mappingFromConfFiles(loadJarFile(new FileInputStream(srgForgeBinary)),
-                                       IO.readLines(fieldsFile).tail, IO.readLines(methodsFile).tail)
-        dumpMapping(new FileOutputStream(outFile), map)
+        val map = Mapping.readMcpMapping(loadJarFile(new FileInputStream(srgForgeBinary)), fieldsFile, methodsFile)
+        map.writeCachedMapping(outFile)
         outFile
       }
     },
@@ -417,8 +417,8 @@ object BaseForgePlugin extends AutoPlugin {
 
       cachedTransform(cacheDir, mappingCache, outFile) { (mappingCache, outFile) =>
         log.info(s"Generating $outFile...")
-        val map = readMapping(IO.readLines(mappingCache))
-        dumpSrgMapping(new FileOutputStream(outFile), map)
+        val map = Mapping.readCachedMapping(mappingCache)
+        map.writeSrgMapping(outFile)
       }
     },
     forge.forgeBinary := {
@@ -435,18 +435,46 @@ object BaseForgePlugin extends AutoPlugin {
 
       trackDependencies(cacheDir, deps) {
         log.info(s"Deobfing Forge binary to MCP names at $outFile")
-        val map = readMapping(IO.readLines(mappingCache))
+        val map = Mapping.readCachedMapping(mappingCache)
         val (tmpmap_mcp, jar) =
           Renamer.applyMapping(loadJarFile(new FileInputStream(srgForgeBinary)), Seq(), classpath, map, log)
 
         log.info("Mapping parameter names...")
-        Renamer.mapParams(jar, IO.readLines(paramsFile).tail)
+        Renamer.mapParams(jar, paramsFile)
 
         writeJarFile(jar, new FileOutputStream(outFile))
         outFile
       }
     },
-    unmanagedClasspath in Compile += forge.forgeBinary.value,
+
+    // Apply user access transformers to the Forge binary. Note that these are based on MCP names.
+    // TODO: Remap MCP name based access transformers to SRG names
+    forge.accessTransformers := Seq(),
+    forge.atForgeBinary := {
+      val log = streams.value.log
+
+      val cacheDir = forge.depDir.value / s"forge-at-binary_${forge.version.value}_${forge.mappings.value}"
+      val forgeBinary = forge.forgeBinary.value
+      val accessTransformers = forge.accessTransformers.value
+      val outFile = forge.forgeDir.value / s"forgeBin-at-${forge.fullVersion.value}-${forge.mappings.value}.jar"
+
+      trackDependencies(cacheDir, accessTransformers.toSet + forgeBinary) {
+        log.info("Applying user access transformers")
+        val jar = loadJarFile(new FileInputStream(forgeBinary))
+        val atJar = AccessTransformer.parse(accessTransformers : _*).transformJar(jar)
+        writeJarFile(atJar, new FileOutputStream(outFile))
+        outFile
+      }
+    },
+    forge.userAtName := s"${name.value.toLowerCase(Locale.ENGLISH).replaceAll("[^0-9a-z]+", "_")}_at.cfg",
+    packageOptions in (Compile, packageBin) += Package.ManifestAttributes("FMLAT" -> forge.userAtName.value),
+    resourceGenerators in Compile += Def.task {
+      val at = AccessTransformer.parse(forge.accessTransformers.value : _*)
+      val target = (resourceManaged in Compile).value / "META-INF" / forge.userAtName.value
+      at.writeTo(target)
+      Seq(target)
+    }.taskValue,
+    unmanagedClasspath in Compile += forge.atForgeBinary.value,
 
     // Launcher bindings
     forge.modClasspath := Seq(),
@@ -492,6 +520,7 @@ object BaseForgePlugin extends AutoPlugin {
       ).get
     },
 
+    // TODO: SBT no longer likes this, apparently.
     forge.cleanCache := IO.delete(forge.cacheRoot.value),
     cleanKeepFiles ++= (if(forge.cleanLtCache.value) Seq() else Seq(forge.ltCacheDir.value)),
     cleanFiles ++= (if(forge.cleanRunDir.value) Seq(forge.cacheRoot.value, forge.runDir.value)

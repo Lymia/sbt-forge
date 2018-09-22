@@ -102,14 +102,15 @@ object asm {
   implicit def classNodeWrapper2ClassNode(wrapper: ClassNodeWrapper) = wrapper.classNode
 
   class JarData(val resources: HashMap[String, Array[Byte]]      = new HashMap[String, Array[Byte]],
-                val classes  : HashMap[String, ClassNodeWrapper] = new HashMap[String, ClassNodeWrapper]) {
+                val classes  : HashMap[String, ClassNodeWrapper] = new HashMap[String, ClassNodeWrapper],
+                val identity: String = "<unknown jar>") {
     def syncClassNames = new JarData(resources.clone, {
-      val classes = new HashMap[String, ClassNodeWrapper]
+      val classes = new mutable.HashMap[String, ClassNodeWrapper]
       for((_, cn) <- this.classes) 
         if(classes.contains(cn.name)) sys.error(s"Duplicate class name: ${cn.name}")
         else classes.put(cn.name, new ClassNodeWrapper(cn))
       classes
-    })
+    }, identity)
     def mapWithVisitor(visitor: ClassVisitor => ClassVisitor) =
       new JarData(resources.clone(),
                   classes.map { t =>
@@ -117,9 +118,33 @@ object asm {
                     val ncn = new ClassNode()
                     cn.accept(visitor(ncn))
                     (cn.name, new ClassNodeWrapper(ncn, noCopy = true))
-                  }).syncClassNames
-    override def clone() = new JarData(resources.clone(), classes.clone())
+                  }, identity).syncClassNames
+
+    def mergeWith(overriding: JarData, log: Logger = null, newIdentity: String = identity) = {
+      val target = new JarData(identity = newIdentity)
+
+      if (log != null) log.info(s"Merging $identity with ${overriding.identity}")
+
+      for((name, data) <- this.resources) target.resources.put(name, data)
+      for((name, data) <- overriding.resources) {
+        if(target.resources.contains(name) && !java.util.Arrays.equals(target.resources(name), data))
+          if (log != null) log.warn(s"${overriding.identity} overrides resource $name in $identity.")
+        target.resources.put(name, data)
+      }
+
+      for((name, cn) <- this.classes) target.classes.put(name, cn.clone())
+      for((name, cn) <- overriding.classes) {
+        if(target.classes.contains(name))
+          if (log != null) log.warn(s"${overriding.identity} overrides class $name in $identity.")
+        target.classes.put(name, cn)
+      }
+
+      target
+    }
+
+    override def clone() = new JarData(resources.clone(), classes.clone(), identity)
   }
+
   def readClassNode(in: InputStream) = {
     val cr = new ClassReader(in)
     val cn = new ClassNode()
@@ -131,7 +156,9 @@ object asm {
     cn.accept(cw)
     cw.toByteArray
   }
-  def loadJarFile(in: InputStream) = {
+
+  // TODO: Properly close streams here
+  def loadJarFile(in: InputStream, identity: String = "<unknown jar>"): JarData = {
     val jarData = new JarData()
     var entry: JarEntry = null
     val jin = new JarInputStream(in, false)
@@ -144,7 +171,10 @@ object asm {
     }
     jarData
   }
-  def writeJarFile(idata: JarData, out: OutputStream) = {
+  def loadJarFile(in: File): JarData =
+    loadJarFile(new FileInputStream(in), in.toString)
+
+  def writeJarFile(idata: JarData, out: OutputStream): Unit = {
     val data = idata.syncClassNames
     val jout = new JarOutputStream(out)
     for((name, data) <- data.resources) {
@@ -158,4 +188,6 @@ object asm {
     jout.finish()
     jout.close()
   }
+  def writeJarFile(idata: JarData, out: File): Unit =
+    writeJarFile(idata, new FileOutputStream(out))
 }
