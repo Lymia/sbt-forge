@@ -10,11 +10,28 @@ import sbt._
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
-case class FieldSpec (owner: String, name: String, desc: String)
-case class MethodSpec(owner: String, name: String, desc: String)
+case class PartialFieldSpec(owner: String, name: String)
+case class FieldSpec       (owner: String, name: String, desc: String)
+case class MethodSpec      (owner: String, name: String, desc: String)
 
 case class Mapping(packageMapping: Map[String, String], classMapping: Map[String, String],
                    fieldMapping: Map[FieldSpec, String], methodMapping: Map[MethodSpec, String]) extends Remapper {
+  private lazy val partialFieldMapping = {
+    val mappings =
+      new mutable.HashMap[PartialFieldSpec, mutable.Set[String]]() with mutable.MultiMap[PartialFieldSpec, String]
+    for ((field, mapping) <- fieldMapping)
+      mappings.addBinding(PartialFieldSpec(field.owner, field.name), mapping)
+    mappings
+  }
+  def mapPartialFieldName(map: PartialFieldSpec) = {
+    val result = partialFieldMapping.getOrElse(map, Set.empty)
+    if (result.isEmpty) map.name
+    else if (result.size == 1) result.head
+    else sys.error(s"Validation error: Partial field name ${map.owner}.${map.name} is ambigious.")
+  }
+  def mapPartialFieldName(owner: String, name: String): String =
+    mapPartialFieldName(PartialFieldSpec(owner, name))
+
   override def map(name: String) = classMapping.get(name) match {
     case Some(name) => name
     case None =>
@@ -33,7 +50,7 @@ case class Mapping(packageMapping: Map[String, String], classMapping: Map[String
   def reverseMapping() =
     // TODO: Add check for duplicates
     Mapping(packageMapping.map(_.swap), classMapping.map(_.swap),
-            fieldMapping .map(x => FieldSpec (map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name),
+            fieldMapping .map(x => FieldSpec (map(x._1.owner), x._2, map          (x._1.desc)) -> x._1.name),
             methodMapping.map(x => MethodSpec(map(x._1.owner), x._2, mapMethodDesc(x._1.desc)) -> x._1.name))
   def stripTrivial() =
     Mapping(packageMapping.filter(x => x._1 != x._2), classMapping.filter(x => x._1 != x._2),

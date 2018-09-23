@@ -56,7 +56,7 @@ private object classpath {
     private def resolveRaw(name: String, source: String) =
       resolveRawAll(name).getOrElse(sys.error(
         s"Validation error: Reference to undefined class $name" +
-        (if (source == null) "" else s" $source in ${resolveRawAll(source).fold("<unknown source>")(_._1)}")))
+        (if (source == null) "" else s" from $source in ${resolveRawAll(source).fold("<unknown source>")(_._1)}")))
 
     def classLocation(name: String, source: String = null) =
       resolveRaw(name, source)._1
@@ -68,13 +68,13 @@ private object classpath {
     for(file <- classpath) {
       log.debug(s"Indexing classes in $file")
       val classes = findClasses(file).toSeq
-      for((name, loader) <- classes)
+      for((name, url) <- classes)
         if(targetJar.classes.contains(name))
           log.warn(s"$file defines class $name already defined in target jar!")
         else if(classLocationMap.contains(name))
           log.warn(s"$file defines class $name already defined in ${classLocation(name)}!")
         else {
-          classSourcesMap.put(name, loader)
+          classSourcesMap.put(name, url)
           classLocationMap.put(name, file.getName)
         }
     }

@@ -159,7 +159,7 @@ object asm {
 
   // TODO: Properly close streams here
   def loadJarFile(in: InputStream, identity: String = "<unknown jar>"): JarData = {
-    val jarData = new JarData()
+    val jarData = new JarData(identity = identity)
     var entry: JarEntry = null
     val jin = new JarInputStream(in, false)
     while({entry = jin.getNextJarEntry; entry != null}) {
@@ -172,7 +172,7 @@ object asm {
     jarData
   }
   def loadJarFile(in: File): JarData =
-    loadJarFile(new FileInputStream(in), in.toString)
+    loadJarFile(new FileInputStream(in), in.getName)
 
   def writeJarFile(idata: JarData, out: OutputStream): Unit = {
     val data = idata.syncClassNames

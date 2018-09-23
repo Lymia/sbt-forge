@@ -4,6 +4,7 @@ import java.util.Locale
 
 import moe.lymia.forge.asm._
 import moe.lymia.forge.Utils._
+import moe.lymia.forge.mapper.Mapping
 import org.objectweb.asm._
 import org.objectweb.asm.Opcodes._
 import sbt._
@@ -81,33 +82,46 @@ object ATFlags {
 }
 
 sealed trait ATTarget {
-  val isSynthetic = false
+  private[build] val isSynthetic = false
+  private[build] def remap(mapping: Mapping): ATTarget
 }
 object ATTarget {
   private def toJavaName(name: String) = name.replace('/', '.')
 
   case class Class(name: String) extends ATTarget {
     override def toString = toJavaName(name)
+    private[build] override def remap(mapping: Mapping) =
+      Class(mapping.map(name))
   }
   case class InnerClass(owner: String, name: String) extends ATTarget {
     override def toString = s"<Inner class entry: ${toJavaName(owner)}$$$name>"
-    override val isSynthetic = true
+    private[build] override val isSynthetic = true
+    private[build] override def remap(mapping: Mapping) =
+      InnerClass(mapping.map(owner), name)
   }
   case class Field(owner: String, name: String) extends ATTarget {
     override def toString = s"${toJavaName(owner)} $name"
+    private[build] override def remap(mapping: Mapping) =
+      Field(mapping.map(owner), mapping.mapPartialFieldName(owner, name))
   }
   case class Method(owner: String, method: MethodName) extends ATTarget {
     override def toString = s"${toJavaName(owner)} ${method.name}${method.desc}"
+    private[build] override def remap(mapping: Mapping) =
+      Method(mapping.map(owner), method.copy(name = mapping.mapMethodName(owner, method.name, method.desc)))
   }
   case class FieldWildcard(owner: String) extends ATTarget {
     override def toString = s"${toJavaName(owner)} *"
+    private[build] override def remap(mapping: Mapping) =
+      FieldWildcard(mapping.map(owner))
   }
   case class MethodWildcard(owner: String) extends ATTarget {
     override def toString = s"${toJavaName(owner)} *()"
+    private[build] override def remap(mapping: Mapping) =
+      MethodWildcard(mapping.map(owner))
   }
 }
 
-case class AccessTransformer(private val transformations: Map[ATTarget, ATFlags]) {
+case class AccessTransformer(transformations: Map[ATTarget, ATFlags]) {
   private def forTarget(target: ATTarget) = transformations.getOrElse(target, ATFlags.Null)
 
   private def transformClassAccess(name: String, access: Int) =
@@ -148,6 +162,9 @@ case class AccessTransformer(private val transformations: Map[ATTarget, ATFlags]
 
   def getAtLines = transformations.filter(!_._1.isSynthetic).map(x => s"${x._2} ${x._1}").toSeq
   def writeTo(file: File) = IO.writeLines(file, "# Merged by sbt-forge" +: getAtLines)
+
+  def remap(mapper: Mapping) =
+    AccessTransformer(transformations.map(x => (x._1.remap(mapper), x._2)))
 }
 object AccessTransformer {
   private def toInternalName(name: String) = name.replace('.', '/')
