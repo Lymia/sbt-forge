@@ -11,8 +11,6 @@ import sbt._
 
 import scala.collection.mutable
 
-// TODO: Implement remapping of access transformers
-
 sealed abstract class AccessLevel(private val order: Int, val flag: Int,
                                   override val toString: String) extends Ordered[AccessLevel] {
   override def compare(o: AccessLevel): Int = this.order - o.order

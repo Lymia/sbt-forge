@@ -162,9 +162,6 @@ object BaseForgePlugin extends AutoPlugin {
       val logout       = InputKey[Unit]("logout", "Logs you out of your Minecraft account")
       val runClient    = InputKey[Unit]("run-client", "Runs the Minecraft client.")
       val runServer    = InputKey[Unit]("run-server", "Runs the Minecraft server")
-
-      // Clean all
-      val cleanCache   = TaskKey[Unit]("clean-cache", "Cleans sbt-forge's long term cache")
     }
 
     implicit class CurseForgeResolverExtension(resolver: Resolver.type) {
@@ -236,9 +233,8 @@ object BaseForgePlugin extends AutoPlugin {
     allDependencies ++= forge.minecraftProvidedLibraries.value,
   )
 
-  private lazy val forgeIvyCtx: Seq[Def.Setting[_]] = Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
+  private lazy val simpleIvyCtx: Seq[Def.Setting[_]] = Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
     allDependencies := Seq(),
-    allDependencies ++= lwjgl.libraries.value,
 
     // We don't actually have any proper products. We use Classpaths only for downloading Maven dependencies.
     products := Seq(),
@@ -252,8 +248,11 @@ object BaseForgePlugin extends AutoPlugin {
     artifactPath := forge.cacheRoot.value / "artifact_path_keep_empty",
     classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
   ) ++ depsFromJar
+  private lazy val lwjglIvyCtx: Seq[Def.Setting[_]] = simpleIvyCtx ++ Seq(
+    allDependencies ++= lwjgl.libraries.value
+  )
   private lazy val projectSettingsCommon =
-    depsFromJar ++ inConfig(Forge)(forgeIvyCtx)
+    depsFromJar ++ inConfig(Forge)(lwjglIvyCtx)
 
   override val requires = LWJGLPlugin
   override lazy val projectSettings = projectSettingsCommon ++ Seq(
@@ -261,12 +260,11 @@ object BaseForgePlugin extends AutoPlugin {
 
     forge.cacheRoot    := target.value / "sbt-forge-cache",
     forge.depDir       := forge.cacheRoot.value / "cache-info",
-
     forge.buildDir     := forge.cacheRoot.value / "build",
     forge.forgeDir     := forge.buildDir.value / ("forge-"+forge.fullVersion.value),
 
-    forge.ltCacheDir   := forge.cacheRoot.value / "persistent",
-    forge.dlCacheDir   := forge.ltCacheDir.value / "downloads",
+    forge.ltCacheDir   := target.value / "sbt-forge-downloads",
+    forge.dlCacheDir   := forge.ltCacheDir.value / "artifacts",
     forge.launcherDir  := forge.ltCacheDir.value / "launcher",
 
     forge.runDir       := baseDirectory.value / "run",
@@ -463,7 +461,6 @@ object BaseForgePlugin extends AutoPlugin {
     },
 
     // Apply user access transformers to the Forge binary. Note that these are based on MCP names.
-    // TODO: Remap MCP name based access transformers to SRG names
     forge.accessTransformers := Seq(),
     forge.atForgeBinary := {
       val log = streams.value.log
@@ -535,11 +532,8 @@ object BaseForgePlugin extends AutoPlugin {
       ).get
     },
 
-    // TODO: SBT no longer likes this, apparently.
-    forge.cleanCache := IO.delete(forge.cacheRoot.value),
     cleanKeepFiles ++= (if(forge.cleanLtCache.value) Seq() else Seq(forge.ltCacheDir.value)),
-    cleanFiles ++= (if(forge.cleanRunDir.value) Seq(forge.cacheRoot.value, forge.runDir.value)
-                    else                        Seq(forge.cacheRoot.value))
+    cleanFiles ++= (if(forge.cleanRunDir.value) Seq(forge.runDir.value) else Seq())
   )
 }
 
