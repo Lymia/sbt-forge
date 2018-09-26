@@ -431,10 +431,9 @@ object BaseForgePlugin extends AutoPlugin {
     },
 
     forge.mappingCache := {
-      // TODO: Investigate why this task insists on rebuilding repeatedly.
       val log = streams.value.log
 
-      val cacheDir = forge.depDir.value / s"mapping-cache_${forge.version.value}_${forge.mappings.value}"
+      val cacheDir = forge.depDir.value / s"srg2mcp-sfmap_${forge.version.value}_${forge.mappings.value}"
       val (fieldsFile, methodsFile) = (forge.fieldsMapCsv.value, forge.methodsMapCsv.value)
       val srgForgeBinary = forge.srgForgeBinary.value
       val outFile = forge.forgeDir.value / s"srg2mcp-${forge.mappings.value}.sfmap"
@@ -449,7 +448,7 @@ object BaseForgePlugin extends AutoPlugin {
     forge.revMappingCache := {
       val log = streams.value.log
 
-      val cacheDir = forge.depDir.value / s"mapping-cache_${forge.version.value}_${forge.mappings.value}"
+      val cacheDir = forge.depDir.value / s"mcp2srg-sfmap_${forge.version.value}_${forge.mappings.value}"
       val mappingCache = forge.mappingCache.value
       val outFile = forge.forgeDir.value / s"mcp2srg-${forge.mappings.value}.sfmap"
 
