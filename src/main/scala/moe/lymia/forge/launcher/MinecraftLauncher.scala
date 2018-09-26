@@ -1,7 +1,6 @@
 package moe.lymia.forge.launcher
 
 import moe.lymia.forge.Utils._
-import org.apache.commons.io.FilenameUtils
 import play.api.libs.json.Json
 import sbt._
 
@@ -20,11 +19,6 @@ object MinecraftLauncher {
   def login(cacheDir: File, log: Logger) = new AuthManager(cacheDir, log).login()
   def logout(cacheDir: File, log: Logger) = new AuthManager(cacheDir, log).logout()
 
-  private def appendToFilename(name: String, append: String) = {
-    val baseName = FilenameUtils.getBaseName(name)
-    val extension = FilenameUtils.getExtension(name)
-    if (extension.isEmpty) s"$baseName$append" else s"$baseName$append.$extension"
-  }
   def prepareModsDirectory(runDir: File, modFiles: Seq[File], log: Logger) = {
     val modsDir = runDir / "mods"
 

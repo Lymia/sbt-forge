@@ -2,7 +2,7 @@ package moe.lymia.forge
 
 import java.io._
 import java.net.URL
-import java.util.Locale
+import java.util.{Locale, UUID}
 
 import moe.lymia.forge.LWJGLPlugin.autoImport._
 import moe.lymia.forge.Utils._
@@ -17,13 +17,14 @@ import sbt.{Def, _}
 
 // TODO: Remove mcBaseVersion, and instead load the MCP versions.json file.
 // TODO: Put all the default URLs, etc into its own file.
-// TODO: Find dependencies not available in Forge for the dependency shadowing system.
-// TODO: Investigate how Ivy works in sbt on a lower level to support such.
 // TODO: Reobf and deobf of mods.
 // TODO: Work on mod dependencies system.
 // TODO: Work on artifact publishing.
 // TODO: Do an optimization pass over the whole codebase. Especially take a look at all the uses of regexes.
 // TODO: Deal with the memory usage of this plugin
+// TODO: Support dependency extraction
+// TODO: Find a way to prefer shading dependencies with a different Scala binary version from Forge
+//       (dependency extraction is not viable due to the binary incompatibility)
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -155,6 +156,16 @@ object BaseForgePlugin extends AutoPlugin {
       val atForgeBinary   = TaskKey[File]("forge-at-binary",
         "Forge binary with user access transformers applied")
 
+      // Dependency shading
+      val depShadePrefix  = TaskKey[String]("forge-dep-shade-prefix",
+        "The package to move shaded dependencies into. It is recommended to override this.")
+      val shadePolicy     = TaskKey[Map[ShadedArtifact, ShadePolicy]]("forge-shade-policy",
+        "The policy that decides which dependencies are shaded into the mod jarl.")
+      val shadedDeps      = TaskKey[Seq[(File, Option[String])]]("forge-shaded-deps",
+        "A list of dependencies to shade into the target jar.")
+      val shadedJar       = TaskKey[File]("forge-shaded-jar",
+        "The MCP named mod .jar with dependencies shaded into it")
+
       // Run Minecraft
       val runOptions   = TaskKey[ForkOptions]("forge-run-options", "Fork options for running Minecraft")
       val modClasspath = TaskKey[Seq[File]]("forge-mod-classpath", "A list of mods loaded by runClient and runServer")
@@ -162,6 +173,26 @@ object BaseForgePlugin extends AutoPlugin {
       val logout       = InputKey[Unit]("logout", "Logs you out of your Minecraft account")
       val runClient    = InputKey[Unit]("run-client", "Runs the Minecraft client.")
       val runServer    = InputKey[Unit]("run-server", "Runs the Minecraft server")
+    }
+
+    sealed trait ShadePolicy
+    object ShadePolicy {
+      case object DontShade extends ShadePolicy
+      case object Shade extends ShadePolicy
+      case class ShadeToPackage(pkg: String) extends ShadePolicy
+      case object ShadeNoRename extends ShadePolicy
+      case object Extract extends ShadePolicy
+    }
+
+    sealed trait ShadedArtifact
+    object ShadedArtifact {
+      case class Managed(id: ModuleID) extends ShadedArtifact
+      case class Unmanaged(location: File) extends ShadedArtifact
+
+      def apply(cpEntry: Attributed[File]) = cpEntry.get(moduleID.key) match {
+        case Some(moduleId) => Managed(moduleId)
+        case None => Unmanaged(cpEntry.data.getCanonicalFile)
+      }
     }
 
     implicit class CurseForgeResolverExtension(resolver: Resolver.type) {
@@ -248,11 +279,16 @@ object BaseForgePlugin extends AutoPlugin {
     artifactPath := forge.cacheRoot.value / "artifact_path_keep_empty",
     classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
   ) ++ depsFromJar
-  private lazy val lwjglIvyCtx: Seq[Def.Setting[_]] = simpleIvyCtx ++ Seq(
-    allDependencies ++= lwjgl.libraries.value
+  private lazy val forgeIvyCtx: Seq[Def.Setting[_]] = simpleIvyCtx ++ Seq(
+    allDependencies ++= lwjgl.libraries.value,
+    scalaModuleInfo := {
+      val scalaVersion = forge.scalaVersion.value
+      scalaModuleInfo.value.map(_.withScalaFullVersion(scalaVersion)
+                                 .withScalaBinaryVersion(CrossVersion.binaryScalaVersion(scalaVersion)))
+    }
   )
   private lazy val projectSettingsCommon =
-    depsFromJar ++ inConfig(Forge)(lwjglIvyCtx)
+    depsFromJar ++ inConfig(Forge)(forgeIvyCtx)
 
   override val requires = LWJGLPlugin
   override lazy val projectSettings = projectSettingsCommon ++ Seq(
@@ -271,6 +307,8 @@ object BaseForgePlugin extends AutoPlugin {
 
     forge.cleanLtCache := false,
     forge.cleanRunDir  := false,
+
+    crossPaths := false,
 
     // Download needed files
     forge.universalDownloadUrl := defaultDownloadUrl(forge.fullVersion.value, "universal"),
@@ -323,15 +361,14 @@ object BaseForgePlugin extends AutoPlugin {
     patchJarTask(forge.patchedServerJar, forge.serverJar, "minecraft_server_patched.jar", "server"),
     forge.mergedJar := {
       val log = streams.value.log
-      val (patchedClientJar, patchedServerJar, universalJar, serverDepPrefixes) =
-        (forge.patchedClientJar.value, forge.patchedServerJar.value,
-         forge.universalJar.value, forge.serverDepPrefixes.value)
+      val (patchedClientJar, patchedServerJar, serverDepPrefixes) =
+        (forge.patchedClientJar.value, forge.patchedServerJar.value, forge.serverDepPrefixes.value)
       val cacheDir = forge.depDir.value / s"merge-jar_${forge.version.value}"
       val outFile = forge.forgeDir.value / "minecraft_merged.jar"
-      trackDependencies(cacheDir, Set(patchedClientJar, patchedServerJar, universalJar)) {
+      trackDependencies(cacheDir, Set(patchedClientJar, patchedServerJar)) {
         log.info("Merging client and server binaries to "+outFile)
         writeJarFile(
-          Merger.merge(patchedClientJar, patchedServerJar, universalJar, serverDepPrefixes, log),
+          Merger.merge(patchedClientJar, patchedServerJar, serverDepPrefixes, log),
           new FileOutputStream(outFile)
         )
         outFile
@@ -357,7 +394,7 @@ object BaseForgePlugin extends AutoPlugin {
 
       trackDependencies(cacheDir, deps) {
         val minecraftNotch = loadJarFile(mergedJar)
-        val forgeNotch = loadJarFile(universalJar)
+        val forgeNotch = loadJarFile(universalJar).stripSignatures
 
         log.info("Removing snowmen...")
         Exceptor.stripSnowmen(minecraftNotch)
@@ -372,7 +409,7 @@ object BaseForgePlugin extends AutoPlugin {
 
         log.info("Deobfing merged binary to SRG names...")
         val (_, mergedSrg) =
-          Renamer.applyMapping(mergedNotch, Seq(), classpath, srgMap, log)
+          JarRemapper.applyMapping(mergedNotch, Seq(), classpath, srgMap, log)
 
         log.info("Restoring class attributes...")
         Exceptor.applyExceptorJson(mergedSrg, IO.read(exceptorJson), log)
@@ -394,6 +431,7 @@ object BaseForgePlugin extends AutoPlugin {
     },
 
     forge.mappingCache := {
+      // TODO: Investigate why this task insists on rebuilding repeatedly.
       val log = streams.value.log
 
       val cacheDir = forge.depDir.value / s"mapping-cache_${forge.version.value}_${forge.mappings.value}"
@@ -450,10 +488,10 @@ object BaseForgePlugin extends AutoPlugin {
         log.info(s"Deobfing Forge binary to MCP names at $outFile")
         val map = Mapping.readCachedMapping(mappingCache)
         val (tmpmap_mcp, jar) =
-          Renamer.applyMapping(loadJarFile(srgForgeBinary), Seq(), classpath, map, log)
+          JarRemapper.applyMapping(loadJarFile(srgForgeBinary), Seq(), classpath, map, log)
 
         log.info("Mapping parameter names...")
-        Renamer.mapParams(jar, paramsFile)
+        JarRemapper.mapParams(jar, paramsFile)
 
         writeJarFile(jar, new FileOutputStream(outFile))
         outFile
@@ -488,9 +526,46 @@ object BaseForgePlugin extends AutoPlugin {
     }.taskValue,
     unmanagedClasspath in Compile += forge.atForgeBinary.value,
 
+    // Shade dependencies into the mod .jar
+    forge.depShadePrefix := s"moe.lymia.forge.depshade.${UUID.randomUUID().toString.toLowerCase.replace("-", "")}",
+    forge.shadePolicy := Map(),
+    forge.shadePolicy ++=
+      (dependencyClasspath in Compile).value.map(x => ShadedArtifact(x) -> ShadePolicy.Shade).toMap,
+    forge.shadePolicy ++=
+      (fullClasspath in Forge).value.map(x => ShadedArtifact(x) -> ShadePolicy.DontShade).toMap,
+    forge.shadePolicy += ShadedArtifact.Unmanaged(forge.atForgeBinary.value) -> ShadePolicy.DontShade,
+    forge.shadedDeps := {
+      val policy = forge.shadePolicy.value
+      val shadePrefix = forge.depShadePrefix.value.replace('.', '/')
+      val classpath = (dependencyClasspath in Compile).value
+      classpath.flatMap(x => policy.get(ShadedArtifact(x)).flatMap {
+        case ShadePolicy.Shade => Some(x.data -> Some(shadePrefix))
+        case ShadePolicy.ShadeToPackage(pkg) => Some(x.data -> Some(pkg))
+        case ShadePolicy.ShadeNoRename => Some(x.data -> None)
+        case _ => None
+      })
+    },
+    forge.shadedJar := {
+      val log = streams.value.log
+
+      val cacheDir = forge.depDir.value / "shaded-jar"
+      val modJar = (packageBin in Compile).value
+      val shadedDeps = forge.shadedDeps.value
+      val outFile = crossTarget.value / appendToFilename(modJar.getName, "_shaded")
+
+      trackDependencies(cacheDir, shadedDeps.map(_._1).toSet + modJar) {
+        log.info(s"Shading mod dependencies to $outFile...")
+        val modJarData = loadJarFile(modJar)
+        val shadedJar = modJarData.shadeDeps(shadedDeps.map(x => (loadJarFile(x._1), x._2)), log,
+                                             newIdentity = outFile.getName)
+        writeJarFile(shadedJar, outFile)
+        outFile
+      }
+    },
+
     // Launcher bindings
     forge.modClasspath := Seq(),
-    forge.modClasspath += (Keys.`package` in Compile).value,
+    forge.modClasspath += (forge.shadedJar in Compile).value,
 
     forge.login  := MinecraftLauncher.login (forge.launcherDir.value, streams.value.log),
     forge.logout := MinecraftLauncher.logout(forge.launcherDir.value, streams.value.log),
@@ -533,7 +608,9 @@ object BaseForgePlugin extends AutoPlugin {
     },
 
     cleanKeepFiles ++= (if(forge.cleanLtCache.value) Seq() else Seq(forge.ltCacheDir.value)),
-    cleanFiles ++= (if(forge.cleanRunDir.value) Seq(forge.runDir.value) else Seq())
+    cleanFiles ++= (if(forge.cleanRunDir.value) Seq(forge.runDir.value) else Seq()),
+    // TODO: Evaluate this hack. We do this to avoid a dependency of clean on tasks that will write to target.
+    clean := (Def.task { IO.delete(cleanFiles.value) } tag (Tags.Clean)).value
   )
 }
 
@@ -543,15 +620,16 @@ object ForgePlugin_1_12 extends AutoPlugin {
   import BaseForgePlugin.autoImport._
 
   override def projectSettings = Seq(
-    forge.mcBaseVersion := "1.12",
-    forge.mcVersion     := "1.12.2",
-    forge.version       := "14.23.4.2759",
-    forge.mappings      := "stable_39",
+    forge.mcBaseVersion   := "1.12",
+    forge.mcVersion       := "1.12.2",
+    forge.version         := "14.23.4.2759",
+    forge.mappings        := "stable_39",
 
-    forge.scalaVersion  := "2.11.1",
-    lwjgl.version       := "2.9.4-nightly-20150209",
+    forge.scalaVersion    := "2.11.1",
+    lwjgl.version         := "2.9.4-nightly-20150209",
 
-    forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.modules", "org.lwjgl.lwjgl"),
+    forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.modules", "org.scala-lang.plugins",
+                                       "com.typesafe.akka", "org.lwjgl.lwjgl"),
     forge.excludedOrganizations in Forge := Set("org.lwjgl.lwjgl"),
     forge.serverDepPrefixes := Seq(
       "org/bouncycastle/", "org/apache/", "com/google/", "com/mojang/authlib/", "com/mojang/util/",

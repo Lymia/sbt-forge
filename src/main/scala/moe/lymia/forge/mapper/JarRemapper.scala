@@ -14,7 +14,7 @@ import scala.collection.mutable
 import scala.collection.JavaConverters._
 
 // TODO: Implement hybrid rename/bridge remapping.
-object Renamer {
+object JarRemapper {
   private val ObjectClass = "java/lang/Object"
 
   // Map parameter names from MCP configs
@@ -215,5 +215,12 @@ object Renamer {
           }
       }
     }))
+  }
+
+  def applyClassMapping(targetJar: JarData, classMapping: Map[String, String]) = {
+    val mapper = new Remapper {
+      override def map(name: String): String = classMapping.getOrElse(name, name)
+    }
+    targetJar.mapWithVisitor(cv => new ClassRemapper(cv, mapper))
   }
 }

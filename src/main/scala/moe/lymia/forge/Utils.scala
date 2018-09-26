@@ -3,7 +3,7 @@ package moe.lymia.forge
 import java.nio.charset.StandardCharsets
 import java.nio.file._
 
-import org.apache.commons.io.{FileUtils, IOUtils}
+import org.apache.commons.io.{FileUtils, FilenameUtils, IOUtils}
 import sbt._
 
 import scala.collection.concurrent
@@ -22,6 +22,7 @@ object Utils {
   def max[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].max(a, b)
   def min[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].min(a, b)
 
+  // String manipulation helpers
   val InnerClassNameRegex = """(.*)$([^$.]*)""".r.anchored
 
   private val classNameRegex = "([^ ]+)/([^ /]+)".r
@@ -33,9 +34,16 @@ object Utils {
     if (owner == ".") name
     else s"$owner/$name"
 
+  def appendToFilename(name: String, append: String) = {
+    val baseName = FilenameUtils.getBaseName(name)
+    val extension = FilenameUtils.getExtension(name)
+    if (extension.isEmpty) s"$baseName$append" else s"$baseName$append.$extension"
+  }
+
   def jarFileUrl(jar: File, file: String) =
     new URL(s"jar:${jar.toURI.toURL}!/$file")
 
+  // Extended IO tasks
   def createDirectories(file: File) =
     if (!file.exists())
       if (!file.mkdirs())

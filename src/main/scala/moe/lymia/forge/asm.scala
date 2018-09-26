@@ -4,6 +4,7 @@ import java.io._
 import java.util.ArrayList
 import java.util.jar._
 
+import moe.lymia.forge.mapper.JarRemapper
 import org.objectweb.asm._
 import org.objectweb.asm.tree._
 import sbt._
@@ -101,16 +102,61 @@ object asm {
   }
   implicit def classNodeWrapper2ClassNode(wrapper: ClassNodeWrapper) = wrapper.classNode
 
-  class JarData(val resources: HashMap[String, Array[Byte]]      = new HashMap[String, Array[Byte]],
-                val classes  : HashMap[String, ClassNodeWrapper] = new HashMap[String, ClassNodeWrapper],
-                val identity: String = "<unknown jar>") {
+  private def mergeAll(newIdentity: String, jars: Seq[JarData], log: Logger) = {
+    val target = new JarData(identity = newIdentity)
+    val classLocation = new mutable.HashMap[String, String]
+    val resourceLocation = new mutable.HashMap[String, String]
+    for (jar <- jars) {
+      for ((name, data) <- jar.classes) {
+        if (log != null)
+          for (loc <- classLocation.get(name)) log.warn(s"${jar.identity} overrides class $name in $loc")
+        classLocation.put(name, jar.identity)
+        target.classes.put(name, data)
+      }
+      for ((name, data) <- jar.resources) {
+        if (log != null)
+          for (loc <- resourceLocation.get(name)) log.warn(s"${jar.identity} overides resource $name in $loc")
+        resourceLocation.put(name, jar.identity)
+        target.resources.put(name, data)
+      }
+    }
+    target
+  }
+
+  private def cloneManifest(mf: Manifest) = {
+    val newManifest = new Manifest()
+    newManifest.getMainAttributes.putAll(mf.getMainAttributes : java.util.Map[_, _])
+    for ((name, attributes) <- mf.getEntries.asScala)
+      newManifest.getEntries.put(name, attributes.clone().asInstanceOf[Attributes])
+    newManifest
+  }
+  private def isSignatureFile(file: String) =
+    file.startsWith("META-INF/SIG-") || (
+      file.startsWith("META-INF/") && (
+        file.endsWith(".SF") || file.endsWith(".DSA") || file.endsWith(".RSA")))
+  private def stripDigests(attributes: Attributes) =
+    for (toRemove <- attributes.keySet().asScala.collect {
+      case x: Attributes.Name if x.toString.endsWith("-Digest") || x.toString.contains("-Digest-") => x
+    }) attributes.remove(toRemove)
+  private def stripManifest(origManifest: Manifest) = {
+    val manifest = cloneManifest(origManifest)
+    stripDigests(manifest.getMainAttributes)
+    val entries = manifest.getEntries
+    for ((entry, attributes) <- entries.asScala) stripDigests(attributes)
+    for ((toRemove, _) <- entries.asScala.filter(_._2.isEmpty)) entries.remove(toRemove)
+    manifest
+  }
+  class JarData(var resources: HashMap[String, Array[Byte]]      = new HashMap[String, Array[Byte]],
+                var classes  : HashMap[String, ClassNodeWrapper] = new HashMap[String, ClassNodeWrapper],
+                var identity : String = "<unknown jar>",
+                var manifest : Manifest = new Manifest()) {
     def syncClassNames = new JarData(resources.clone, {
       val classes = new mutable.HashMap[String, ClassNodeWrapper]
-      for((_, cn) <- this.classes) 
+      for((_, cn) <- this.classes)
         if(classes.contains(cn.name)) sys.error(s"Duplicate class name: ${cn.name}")
         else classes.put(cn.name, new ClassNodeWrapper(cn))
       classes
-    }, identity)
+    }, identity, manifest)
     def mapWithVisitor(visitor: ClassVisitor => ClassVisitor) =
       new JarData(resources.clone(),
                   classes.map { t =>
@@ -118,31 +164,26 @@ object asm {
                     val ncn = new ClassNode()
                     cn.accept(visitor(ncn))
                     (cn.name, new ClassNodeWrapper(ncn, noCopy = true))
-                  }, identity).syncClassNames
+                  }, identity, manifest).syncClassNames
 
-    def mergeWith(overriding: JarData, log: Logger = null, newIdentity: String = identity) = {
-      val target = new JarData(identity = newIdentity)
-
-      if (log != null) log.info(s"Merging $identity with ${overriding.identity}")
-
-      for((name, data) <- this.resources) target.resources.put(name, data)
-      for((name, data) <- overriding.resources) {
-        if(target.resources.contains(name) && !java.util.Arrays.equals(target.resources(name), data))
-          if (log != null) log.warn(s"${overriding.identity} overrides resource $name in $identity.")
-        target.resources.put(name, data)
-      }
-
-      for((name, cn) <- this.classes) target.classes.put(name, cn.clone())
-      for((name, cn) <- overriding.classes) {
-        if(target.classes.contains(name))
-          if (log != null) log.warn(s"${overriding.identity} overrides class $name in $identity.")
-        target.classes.put(name, cn)
-      }
-
-      target
+    def mergeWith(overriding: JarData, log: Logger = null, newIdentity: String = identity) =
+      mergeAll(newIdentity, Seq(this, overriding), log)
+    def shadeDeps(depList: Seq[(JarData, Option[String])],
+                  log: Logger = null, newIdentity: String = identity) = {
+      val shadeMappings =
+        (for ((dep, shadePrefix) <- depList;
+              name <- dep.classes.keySet if !classes.contains(name);
+              shadePrefix <- shadePrefix)
+          yield name -> s"$shadePrefix/$name").toMap
+      val merged = mergeAll(newIdentity, this +: depList.map(_._1), log)
+      JarRemapper.applyClassMapping(merged, shadeMappings)
     }
 
-    override def clone() = new JarData(resources.clone(), classes.clone(), identity)
+    def stripSignatures =
+      new JarData(resources.filter(x => !isSignatureFile(x._1)), classes, identity, stripManifest(manifest))
+
+    override def clone() =
+      new JarData(resources.clone(), classes.clone(), identity, cloneManifest(manifest))
   }
 
   def readClassNode(in: InputStream) = {
@@ -169,6 +210,7 @@ object asm {
         jarData.classes.put(cn.name, new ClassNodeWrapper(cn, noCopy = true))
       } else jarData.resources.put(entry.getName, IO.readBytes(jin))
     }
+    jarData.manifest = jin.getManifest
     jarData
   }
   def loadJarFile(in: File): JarData =
@@ -176,7 +218,7 @@ object asm {
 
   def writeJarFile(idata: JarData, out: OutputStream): Unit = {
     val data = idata.syncClassNames
-    val jout = new JarOutputStream(out)
+    val jout = new JarOutputStream(out, data.manifest)
     for((name, data) <- data.resources) {
       jout.putNextEntry(new JarEntry(name))
       jout.write(data)

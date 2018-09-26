@@ -37,11 +37,10 @@ object Merger {
   private object InnerClassData {
     def apply(icn: InnerClassNode): InnerClassData = apply(icn.innerName, icn.name, icn.outerName)
   }
-  def merge(clientPath: File, serverPath: File, classesPath: File, serverDepPrefixes: Seq[String],
+  def merge(clientPath: File, serverPath: File, serverDepPrefixes: Seq[String],
             log: Logger) = {
-    val client = loadJarFile(clientPath)
-    val server = loadJarFile(serverPath)
-    val classes = loadJarFile(classesPath)
+    val client = loadJarFile(clientPath).stripSignatures
+    val server = loadJarFile(serverPath).stripSignatures
     val target = new JarData()
 
     for((name, data) <- client.resources)
@@ -83,11 +82,6 @@ object Merger {
           }
       }
     }
-
-    target.classes.put(SideClassName,
-                       classes.classes.getOrElse(SideClassName, sys.error("Side not found in classes.jar")))
-    target.classes.put(SideOnlyClassName,
-                       classes.classes.getOrElse(SideOnlyClassName, sys.error("SideOnly not found in classes.jar")))
 
     target
   }
