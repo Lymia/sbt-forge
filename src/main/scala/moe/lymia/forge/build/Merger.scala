@@ -83,6 +83,7 @@ object Merger {
       }
     }
 
+    target.manifest = mergeManifest(client.manifest, server.manifest)
     target
   }
 }

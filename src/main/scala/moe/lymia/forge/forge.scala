@@ -525,6 +525,12 @@ object BaseForgePlugin extends AutoPlugin {
     }.taskValue,
     unmanagedClasspath in Compile += forge.atForgeBinary.value,
 
+    // Add dependency extraction related information to mod .jar
+    packageOptions in (Compile, packageBin) += Package.ManifestAttributes(
+      "Maven-Artifact" -> projectID.value.toString,
+      "Timestamp" -> System.currentTimeMillis.toString
+    ),
+
     // Shade dependencies into the mod .jar
     forge.depShadePrefix := s"moe.lymia.forge.depshade.${UUID.randomUUID().toString.toLowerCase.replace("-", "")}",
     forge.shadePolicy := Map(),

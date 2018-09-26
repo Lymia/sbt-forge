@@ -119,17 +119,28 @@ object asm {
         resourceLocation.put(name, jar.identity)
         target.resources.put(name, data)
       }
+      target.manifest = mergeManifest(target.manifest, jar.manifest)
     }
     target
   }
 
-  private def cloneManifest(mf: Manifest) = {
+  def mergeManifest(a: Manifest, b: Manifest) = {
+    val newManifest = a.clone().asInstanceOf[Manifest]
+    newManifest.getMainAttributes.putAll(b.getMainAttributes : java.util.Map[_, _])
+    for ((name, attributes) <- b.getEntries.asScala)
+      if (newManifest.getEntries.containsKey(name))
+        newManifest.getEntries.get(name).putAll(attributes : java.util.Map[_, _])
+      else newManifest.getEntries.put(name, attributes.clone().asInstanceOf[Attributes])
+    newManifest
+  }
+  def cloneManifest(mf: Manifest) = {
     val newManifest = new Manifest()
     newManifest.getMainAttributes.putAll(mf.getMainAttributes : java.util.Map[_, _])
     for ((name, attributes) <- mf.getEntries.asScala)
       newManifest.getEntries.put(name, attributes.clone().asInstanceOf[Attributes])
     newManifest
   }
+
   private def isSignatureFile(file: String) =
     file.startsWith("META-INF/SIG-") || (
       file.startsWith("META-INF/") && (
@@ -138,7 +149,7 @@ object asm {
     for (toRemove <- attributes.keySet().asScala.collect {
       case x: Attributes.Name if x.toString.endsWith("-Digest") || x.toString.contains("-Digest-") => x
     }) attributes.remove(toRemove)
-  private def stripManifest(origManifest: Manifest) = {
+  def stripSignaturesFromManifest(origManifest: Manifest) = {
     val manifest = cloneManifest(origManifest)
     stripDigests(manifest.getMainAttributes)
     val entries = manifest.getEntries
@@ -146,6 +157,7 @@ object asm {
     for ((toRemove, _) <- entries.asScala.filter(_._2.isEmpty)) entries.remove(toRemove)
     manifest
   }
+
   class JarData(var resources: HashMap[String, Array[Byte]]      = new HashMap[String, Array[Byte]],
                 var classes  : HashMap[String, ClassNodeWrapper] = new HashMap[String, ClassNodeWrapper],
                 var identity : String = "<unknown jar>",
@@ -176,11 +188,13 @@ object asm {
               shadePrefix <- shadePrefix)
           yield name -> s"$shadePrefix/$name").toMap
       val merged = mergeAll(newIdentity, this +: depList.map(_._1), log)
+      merged.manifest = mergeManifest(merged.manifest, manifest) // This jar's manifest takes priority
       JarRemapper.applyClassMapping(merged, shadeMappings)
     }
 
     def stripSignatures =
-      new JarData(resources.filter(x => !isSignatureFile(x._1)), classes, identity, stripManifest(manifest))
+      new JarData(resources.filter(x => !isSignatureFile(x._1)), classes, identity,
+                  stripSignaturesFromManifest(manifest))
 
     override def clone() =
       new JarData(resources.clone(), classes.clone(), identity, cloneManifest(manifest))
