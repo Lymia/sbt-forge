@@ -26,13 +26,7 @@ object MinecraftLauncher {
     if (modsDir.exists()) IO.delete(modsDir)
     createDirectories(modsDir)
     for (modFile <- modFiles) {
-      var modFileName = modFile.getName
-      var filenameExtra = 1
-      while ((modsDir / modFileName).exists()) {
-        modFileName = appendToFilename(modFile.getName, s"-$filenameExtra")
-        filenameExtra += 1
-      }
-
+      val modFileName = findUnusedFile(modFile.getName, x => (modsDir / x).exists())
       val modTarget = modsDir / modFileName
       log.info(s"Linking $modFileName to $modTarget.")
       ln(modFile, modTarget)

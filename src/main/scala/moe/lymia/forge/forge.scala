@@ -22,9 +22,9 @@ import sbt.{Def, _}
 // TODO: Work on artifact publishing.
 // TODO: Do an optimization pass over the whole codebase. Especially take a look at all the uses of regexes.
 // TODO: Deal with the memory usage of this plugin
-// TODO: Support dependency extraction
-// TODO: Find a way to prefer shading dependencies with a different Scala binary version from Forge
-//       (dependency extraction is not viable due to the binary incompatibility)
+// TODO: Make our forge binary a proper artifact.
+// TODO: Properly set provided dependencies in .pom file.
+//       (Currently, the pom must be discarded for proper compilation in pretty much all cases.)
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -161,8 +161,8 @@ object BaseForgePlugin extends AutoPlugin {
         "The package to move shaded dependencies into. It is recommended to override this.")
       val shadePolicy     = TaskKey[Map[ShadedArtifact, ShadePolicy]]("forge-shade-policy",
         "The policy that decides which dependencies are shaded into the mod jarl.")
-      val shadedDeps      = TaskKey[Seq[(File, Option[String])]]("forge-shaded-deps",
-        "A list of dependencies to shade into the target jar.")
+      val shadedDepJar    = TaskKey[(File, File)]("forge-shaded-dep-jar",
+        "Shade all shaded dependencies")
       val shadedJar       = TaskKey[File]("forge-shaded-jar",
         "The MCP named mod .jar with dependencies shaded into it")
 
@@ -175,7 +175,12 @@ object BaseForgePlugin extends AutoPlugin {
       val runServer    = InputKey[Unit]("run-server", "Runs the Minecraft server")
     }
 
-    sealed trait ShadePolicy
+    sealed trait ShadePolicy {
+      def isShaded = this match {
+        case ShadePolicy.Shade | ShadePolicy.ShadeToPackage(_) | ShadePolicy.ShadeNoRename => true
+        case _ => false
+      }
+    }
     object ShadePolicy {
       case object DontShade extends ShadePolicy
       case object Shade extends ShadePolicy
@@ -211,51 +216,53 @@ object BaseForgePlugin extends AutoPlugin {
   }
   import autoImport._
 
-  object forgeHelpers {
-    def defaultDownloadUrl(ver: String, section: String) =
-      s"http://files.minecraftforge.net/maven/net/minecraftforge/forge/$ver/forge-$ver-$section.jar"
+  // Various helper functions
+  private def defaultDownloadUrl(ver: String, section: String) =
+    s"http://files.minecraftforge.net/maven/net/minecraftforge/forge/$ver/forge-$ver-$section.jar"
 
-    def patchJarTask(task: TaskKey[File], inputTask: TaskKey[File],
-                     outputName: String, patchSection: String) =
-      task := {
-        val (log, binpatches) = (streams.value.log, forge.binpatches.value)
-        val cacheDir = forge.depDir.value / s"patch-jar_${forge.version.value}_${outputName.replace('.', '-')}"
-        cachedTransform(cacheDir, inputTask.value, forge.forgeDir.value / outputName) { (input, outFile) =>
-          val patchSet = BinPatch.readPatchSet(binpatches, patchSection)
-          BinPatch.patchJar(input, outFile, patchSet, log)
-        }
+  private def patchJarTask(task: TaskKey[File], inputTask: TaskKey[File],
+                           outputName: String, patchSection: String) =
+    task := {
+      val (log, binpatches) = (streams.value.log, forge.binpatches.value)
+      val cacheDir = forge.depDir.value / s"patch-jar_${forge.version.value}_${outputName.replace('.', '-')}"
+      cachedTransform(cacheDir, inputTask.value, forge.forgeDir.value / outputName) { (input, outFile) =>
+        val patchSet = BinPatch.readPatchSet(binpatches, patchSection)
+        BinPatch.patchJar(input, outFile, patchSet, log)
       }
-
-    def extractTask(task: TaskKey[File], urlSource: TaskKey[File],
-                    sourceName: String, outputName: String, isMappingBased: Boolean = false) =
-      task := {
-        val log = streams.value.log
-        val mapVersion = if (isMappingBased) s"_${forge.mappings.value}" else ""
-        val cacheDir =
-          forge.depDir.value / s"extract_${forge.version.value}${mapVersion}_${outputName.replace('.', '-')}"
-        cachedTransform(cacheDir, urlSource.value, forge.forgeDir.value / outputName) { (source, outFile) =>
-          val jarUrl = jarFileUrl(source, sourceName)
-          log.info(s"Extracting $jarUrl to $outFile")
-          FileUtils.copyURLToFile(jarUrl, outFile)
-        }
-      }
-    def downloadTask(task: TaskKey[File], versionKey: SettingKey[String], urlSource: TaskKey[String],
-                     outputName: String, ext: String) =
-      task := {
-        val log = streams.value.log
-        val url = urlSource.value
-        cachedOperation(forge.dlCacheDir.value / s"$outputName-${versionKey.value}$ext") { outFile =>
-          download(new URL(url), outFile, log)
-        }
-      }
-
-    val mappingRegex = "([^_]+)_(.+)".r
-    def splitMapping(s: String) = s match {
-      case mappingRegex(channel, version) => (channel, version)
-      case _ => sys.error(s"Could not parse mapping channel name: $s")
     }
+
+  private def extractTask(task: TaskKey[File], urlSource: TaskKey[File],
+                          sourceName: String, outputName: String,
+                          isMappingBased: Boolean = false) =
+    task := {
+      val log = streams.value.log
+      val mapVersion = if (isMappingBased) s"_${forge.mappings.value}" else ""
+      val cacheDir =
+        forge.depDir.value / s"extract_${forge.version.value}${mapVersion}_${outputName.replace('.', '-')}"
+      cachedTransform(cacheDir, urlSource.value, forge.forgeDir.value / outputName) { (source, outFile) =>
+        val jarUrl = jarFileUrl(source, sourceName)
+        log.info(s"Extracting $jarUrl to $outFile")
+        FileUtils.copyURLToFile(jarUrl, outFile)
+      }
+    }
+  private def downloadTask(task: TaskKey[File], versionKey: SettingKey[String], urlSource: TaskKey[String],
+                           outputName: String, ext: String) =
+    task := {
+      val log = streams.value.log
+      val url = urlSource.value
+      cachedOperation(forge.dlCacheDir.value / s"$outputName-${versionKey.value}$ext") { outFile =>
+        download(new URL(url), outFile, log)
+      }
+    }
+
+  private val mappingRegex = "([^_]+)_(.+)".r
+  private def splitMapping(s: String) = s match {
+    case mappingRegex(channel, version) => (channel, version)
+    case _ => sys.error(s"Could not parse mapping channel name: $s")
   }
-  import forgeHelpers._
+
+  private def getCrossVersion(artifact: Attributed[File]) =
+    artifact.get(moduleID.key).map(id => id.crossVersion)
 
   // Initialize Forge scopes
   private lazy val depsFromJar: Seq[Def.Setting[_]] = Seq(
@@ -278,8 +285,8 @@ object BaseForgePlugin extends AutoPlugin {
 
     artifactPath := forge.cacheRoot.value / "artifact_path_keep_empty",
     classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
-  ) ++ depsFromJar
-  private lazy val forgeIvyCtx: Seq[Def.Setting[_]] = simpleIvyCtx ++ Seq(
+  )
+  private lazy val forgeIvyCtx: Seq[Def.Setting[_]] = simpleIvyCtx ++ depsFromJar ++ Seq(
     allDependencies ++= lwjgl.libraries.value,
     scalaModuleInfo := {
       val scalaVersion = forge.scalaVersion.value
@@ -308,6 +315,7 @@ object BaseForgePlugin extends AutoPlugin {
     forge.cleanLtCache := false,
     forge.cleanRunDir  := false,
 
+    publishMavenStyle := true,
     crossPaths := false,
 
     // Download needed files
@@ -534,35 +542,44 @@ object BaseForgePlugin extends AutoPlugin {
     // Shade dependencies into the mod .jar
     forge.depShadePrefix := s"moe.lymia.forge.depshade.${UUID.randomUUID().toString.toLowerCase.replace("-", "")}",
     forge.shadePolicy := Map(),
-    forge.shadePolicy ++=
-      (dependencyClasspath in Compile).value.map(x => ShadedArtifact(x) -> ShadePolicy.Shade).toMap,
+    forge.shadePolicy ++= (dependencyClasspath in Compile).value.map(x => ShadedArtifact(x) -> (
+      if (x.get(moduleID.key).map(_.organization).contains("org.scala-lang")) ShadePolicy.Shade
+      else getCrossVersion(x) match {
+        case Some(_: Disabled) | None => ShadePolicy.Extract
+        case x => ShadePolicy.Shade
+      }
+    )).toMap,
     forge.shadePolicy ++=
       (fullClasspath in Forge).value.map(x => ShadedArtifact(x) -> ShadePolicy.DontShade).toMap,
     forge.shadePolicy += ShadedArtifact.Unmanaged(forge.atForgeBinary.value) -> ShadePolicy.DontShade,
-    forge.shadedDeps := {
-      val policy = forge.shadePolicy.value
-      val shadePrefix = forge.depShadePrefix.value.replace('.', '/')
-      val classpath = (dependencyClasspath in Compile).value
-      classpath.flatMap(x => policy.get(ShadedArtifact(x)).flatMap {
-        case ShadePolicy.Shade => Some(x.data -> Some(shadePrefix))
-        case ShadePolicy.ShadeToPackage(pkg) => Some(x.data -> Some(pkg))
-        case ShadePolicy.ShadeNoRename => Some(x.data -> None)
-        case _ => None
-      })
-    },
     forge.shadedJar := {
       val log = streams.value.log
 
       val cacheDir = forge.depDir.value / "shaded-jar"
       val modJar = (packageBin in Compile).value
-      val shadedDeps = forge.shadedDeps.value
       val outFile = crossTarget.value / appendToFilename(modJar.getName, "_shaded")
+
+      val policy = forge.shadePolicy.value
+      val classpath = (dependencyClasspath in Compile).value
+      // TODO: Also shade dependencies that depend on shaded dependencies
+      val shadedDeps = {
+        val shadePrefix = forge.depShadePrefix.value.replace('.', '/')
+        classpath.flatMap(x => policy.get(ShadedArtifact(x)).flatMap {
+          case ShadePolicy.Shade => Some(x.data -> Some(shadePrefix))
+          case ShadePolicy.ShadeToPackage(pkg) => Some(x.data -> Some(pkg))
+          case ShadePolicy.ShadeNoRename => Some(x.data -> None)
+          case _ => None
+        })
+      }
+      val extractedDeps = classpath.flatMap(x => policy.get(ShadedArtifact(x)).flatMap {
+        case ShadePolicy.Extract => Some((x.data, x.get(moduleID.key)))
+        case _ => None
+      })
 
       trackDependencies(cacheDir, shadedDeps.map(_._1).toSet + modJar) {
         log.info(s"Shading mod dependencies to $outFile...")
-        val modJarData = loadJarFile(modJar)
-        val shadedJar = modJarData.shadeDeps(shadedDeps.map(x => (loadJarFile(x._1), x._2)), log,
-                                             newIdentity = outFile.getName)
+        val shadedJar = DepShader.shadeDeps(
+          loadJarFile(modJar), shadedDeps.map(x => (loadJarFile(x._1), x._2)), extractedDeps, log)
         writeJarFile(shadedJar, outFile)
         outFile
       }
@@ -615,7 +632,7 @@ object BaseForgePlugin extends AutoPlugin {
     cleanKeepFiles ++= (if(forge.cleanLtCache.value) Seq() else Seq(forge.ltCacheDir.value)),
     cleanFiles ++= (if(forge.cleanRunDir.value) Seq(forge.runDir.value) else Seq()),
     // TODO: Evaluate this hack. We do this to avoid a dependency of clean on tasks that will write to target.
-    clean := (Def.task { IO.delete(cleanFiles.value) } tag (Tags.Clean)).value
+    clean := (Def.task { IO.delete(cleanFiles.value) } tag Tags.Clean).value
   )
 }
 

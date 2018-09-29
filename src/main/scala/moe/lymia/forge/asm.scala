@@ -4,7 +4,6 @@ import java.io._
 import java.util.ArrayList
 import java.util.jar._
 
-import moe.lymia.forge.mapper.JarRemapper
 import org.objectweb.asm._
 import org.objectweb.asm.tree._
 import sbt._
@@ -102,7 +101,7 @@ object asm {
   }
   implicit def classNodeWrapper2ClassNode(wrapper: ClassNodeWrapper) = wrapper.classNode
 
-  private def mergeAll(newIdentity: String, jars: Seq[JarData], log: Logger) = {
+  def mergeAllJars(newIdentity: String, jars: Seq[JarData], log: Logger = null) = {
     val target = new JarData(identity = newIdentity)
     val classLocation = new mutable.HashMap[String, String]
     val resourceLocation = new mutable.HashMap[String, String]
@@ -154,6 +153,7 @@ object asm {
     stripDigests(manifest.getMainAttributes)
     val entries = manifest.getEntries
     for ((entry, attributes) <- entries.asScala) stripDigests(attributes)
+    // TODO: Why do we still have leftover Name: entries?
     for ((toRemove, _) <- entries.asScala.filter(_._2.isEmpty)) entries.remove(toRemove)
     manifest
   }
@@ -179,18 +179,7 @@ object asm {
                   }, identity, manifest).syncClassNames
 
     def mergeWith(overriding: JarData, log: Logger = null, newIdentity: String = identity) =
-      mergeAll(newIdentity, Seq(this, overriding), log)
-    def shadeDeps(depList: Seq[(JarData, Option[String])],
-                  log: Logger = null, newIdentity: String = identity) = {
-      val shadeMappings =
-        (for ((dep, shadePrefix) <- depList;
-              name <- dep.classes.keySet if !classes.contains(name);
-              shadePrefix <- shadePrefix)
-          yield name -> s"$shadePrefix/$name").toMap
-      val merged = mergeAll(newIdentity, this +: depList.map(_._1), log)
-      merged.manifest = mergeManifest(merged.manifest, manifest) // This jar's manifest takes priority
-      JarRemapper.applyClassMapping(merged, shadeMappings)
-    }
+      mergeAllJars(newIdentity, Seq(this, overriding), log)
 
     def stripSignatures =
       new JarData(resources.filter(x => !isSignatureFile(x._1)), classes, identity,

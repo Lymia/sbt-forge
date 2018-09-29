@@ -35,9 +35,18 @@ object Utils {
     else s"$owner/$name"
 
   def appendToFilename(name: String, append: String) = {
-    val baseName = FilenameUtils.getBaseName(name)
+    val baseName = FilenameUtils.removeExtension(name)
     val extension = FilenameUtils.getExtension(name)
     if (extension.isEmpty) s"$baseName$append" else s"$baseName$append.$extension"
+  }
+  def findUnusedFile(file: String, exists: String => Boolean) = {
+    var result = file
+    var current = 2
+    while (exists(result)) {
+      result = appendToFilename(file, s"_$current")
+      current += 1
+    }
+    result
   }
 
   def jarFileUrl(jar: File, file: String) =

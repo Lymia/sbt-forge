@@ -216,11 +216,4 @@ object JarRemapper {
       }
     }))
   }
-
-  def applyClassMapping(targetJar: JarData, classMapping: Map[String, String]) = {
-    val mapper = new Remapper {
-      override def map(name: String): String = classMapping.getOrElse(name, name)
-    }
-    targetJar.mapWithVisitor(cv => new ClassRemapper(cv, mapper))
-  }
 }
