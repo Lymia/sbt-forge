@@ -1,6 +1,6 @@
 package moe.lymia.forge.build
 
-import java.io.{ByteArrayOutputStream, File, FileOutputStream, PrintStream}
+import java.io.{ByteArrayOutputStream, FileOutputStream, PrintStream}
 import java.util.jar.{Attributes, Manifest}
 import java.util.zip.ZipFile
 
@@ -71,7 +71,7 @@ object DepShader {
       ShadeMapping((for ((dep, shadePrefix) <- depList;
                           name <- dep.classes.keySet;
                           shadePrefix <- shadePrefix) yield name -> s"$shadePrefix/$name").toMap)
-    val merged = mergeAllJars("deps_target.jar", depList.map(_._1) :+ target, log)
+    val merged = JarData.mergeAll(depList.map(_._1) :+ target, log)
     merged.manifest = target.manifest
     val mapped = shadeMapping.mapJar(merged)
     for ((file, moduleId) <- extractedDeps) addExtractedDep(mapped, file, moduleId)

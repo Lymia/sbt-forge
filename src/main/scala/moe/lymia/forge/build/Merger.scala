@@ -1,6 +1,5 @@
 package moe.lymia.forge.build
 
-import java.io._
 import java.util
 
 import moe.lymia.forge.asm._
@@ -39,8 +38,8 @@ object Merger {
   }
   def merge(clientPath: File, serverPath: File, serverDepPrefixes: Seq[String],
             log: Logger) = {
-    val client = loadJarFile(clientPath).stripSignatures
-    val server = loadJarFile(serverPath).stripSignatures
+    val client = JarData.load(clientPath).stripSignatures
+    val server = JarData.load(serverPath).stripSignatures
     val target = new JarData()
 
     for((name, data) <- client.resources)
@@ -83,7 +82,7 @@ object Merger {
       }
     }
 
-    target.manifest = mergeManifest(client.manifest, server.manifest)
+    target.manifest = client.manifest.merge(server.manifest)
     target
   }
 }

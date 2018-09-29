@@ -375,10 +375,7 @@ object BaseForgePlugin extends AutoPlugin {
       val outFile = forge.forgeDir.value / "minecraft_merged.jar"
       trackDependencies(cacheDir, Set(patchedClientJar, patchedServerJar)) {
         log.info("Merging client and server binaries to "+outFile)
-        writeJarFile(
-          Merger.merge(patchedClientJar, patchedServerJar, serverDepPrefixes, log),
-          new FileOutputStream(outFile)
-        )
+        Merger.merge(patchedClientJar, patchedServerJar, serverDepPrefixes, log).write(outFile)
         outFile
       }
     },
@@ -401,8 +398,8 @@ object BaseForgePlugin extends AutoPlugin {
       val outFile = forge.forgeDir.value / "forgeBin_srg.jar"
 
       trackDependencies(cacheDir, deps) {
-        val minecraftNotch = loadJarFile(mergedJar)
-        val forgeNotch = loadJarFile(universalJar).stripSignatures
+        val minecraftNotch = JarData.load(mergedJar)
+        val forgeNotch = JarData.load(universalJar).stripSignatures
 
         log.info("Removing snowmen...")
         Exceptor.stripSnowmen(minecraftNotch)
@@ -433,7 +430,7 @@ object BaseForgePlugin extends AutoPlugin {
         val transformedBin = AccessTransformer.parse(accessTransformers : _*).transformJar(mergedSrg)
 
         log.info(s"Writing merged Forge binary to $outFile")
-        writeJarFile(transformedBin, new FileOutputStream(outFile))
+        transformedBin.write(outFile)
         outFile
       }
     },
@@ -448,7 +445,7 @@ object BaseForgePlugin extends AutoPlugin {
 
       trackDependencies(cacheDir, Set(fieldsFile, methodsFile, srgForgeBinary)) {
         log.info(s"Generating $outFile...")
-        val map = Mapping.readMcpMapping(loadJarFile(srgForgeBinary), fieldsFile, methodsFile)
+        val map = Mapping.readMcpMapping(JarData.load(srgForgeBinary), fieldsFile, methodsFile)
         map.writeCachedMapping(outFile)
         outFile
       }
@@ -494,13 +491,12 @@ object BaseForgePlugin extends AutoPlugin {
       trackDependencies(cacheDir, deps) {
         log.info(s"Deobfing Forge binary to MCP names at $outFile")
         val map = Mapping.readCachedMapping(mappingCache)
-        val (tmpmap_mcp, jar) =
-          JarRemapper.applyMapping(loadJarFile(srgForgeBinary), Seq(), classpath, map, log)
+        val (tmpmap_mcp, jar) = JarRemapper.applyMapping(JarData.load(srgForgeBinary), Seq(), classpath, map, log)
 
         log.info("Mapping parameter names...")
         JarRemapper.mapParams(jar, paramsFile)
 
-        writeJarFile(jar, new FileOutputStream(outFile))
+        jar.write(outFile)
         outFile
       }
     },
@@ -517,9 +513,9 @@ object BaseForgePlugin extends AutoPlugin {
 
       trackDependencies(cacheDir, accessTransformers.toSet + forgeBinary) {
         log.info("Applying user access transformers")
-        val jar = loadJarFile(forgeBinary)
+        val jar = JarData.load(forgeBinary)
         val atJar = AccessTransformer.parse(accessTransformers : _*).transformJar(jar)
-        writeJarFile(atJar, new FileOutputStream(outFile))
+        atJar.write(outFile)
         outFile
       }
     },
@@ -579,8 +575,8 @@ object BaseForgePlugin extends AutoPlugin {
       trackDependencies(cacheDir, shadedDeps.map(_._1).toSet + modJar) {
         log.info(s"Shading mod dependencies to $outFile...")
         val shadedJar = DepShader.shadeDeps(
-          loadJarFile(modJar), shadedDeps.map(x => (loadJarFile(x._1), x._2)), extractedDeps, log)
-        writeJarFile(shadedJar, outFile)
+          JarData.load(modJar), shadedDeps.map(x => (JarData.load(x._1), x._2)), extractedDeps, log)
+        shadedJar.write(outFile)
         outFile
       }
     },
