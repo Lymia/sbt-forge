@@ -1,7 +1,5 @@
 package moe.lymia.forge.asm
 
-import java.util.ArrayList
-
 import org.objectweb.asm.tree.{AnnotationNode, ClassNode, FieldNode, MethodNode}
 
 import scala.collection.JavaConverters._
@@ -49,33 +47,33 @@ final class ClassNodeWrapper(private var inNode: ClassNode = null, noCopy: Boole
 private[asm] trait NodeImplicits {
   implicit object MethodAnnotationContainer extends AnnotationContainer[MethodNode] {
     override def visibleAnnotations(mn: MethodNode) = {
-      if (mn.visibleAnnotations == null) mn.visibleAnnotations = new ArrayList[AnnotationNode]
+      if (mn.visibleAnnotations == null) mn.visibleAnnotations = new java.util.ArrayList[AnnotationNode]
       mn.visibleAnnotations.asScala
     }
     override def invisibleAnnotations(mn: MethodNode) = {
-      if (mn.invisibleAnnotations == null) mn.invisibleAnnotations = new ArrayList[AnnotationNode]
+      if (mn.invisibleAnnotations == null) mn.invisibleAnnotations = new java.util.ArrayList[AnnotationNode]
       mn.invisibleAnnotations.asScala
     }
   }
   implicit object FieldAnnotationContainer extends AnnotationContainer[FieldNode] {
     override def visibleAnnotations(fn: FieldNode) = {
-      if (fn.visibleAnnotations == null) fn.visibleAnnotations = new ArrayList[AnnotationNode]
+      if (fn.visibleAnnotations == null) fn.visibleAnnotations = new java.util.ArrayList[AnnotationNode]
       fn.visibleAnnotations.asScala
     }
     override def invisibleAnnotations(fn: FieldNode) = {
-      if (fn.invisibleAnnotations == null) fn.invisibleAnnotations = new ArrayList[AnnotationNode]
+      if (fn.invisibleAnnotations == null) fn.invisibleAnnotations = new java.util.ArrayList[AnnotationNode]
       fn.invisibleAnnotations.asScala
     }
   }
   implicit object ClassAnnotationContainer extends AnnotationContainer[ClassNodeWrapper] {
     override def visibleAnnotations(cn: ClassNodeWrapper) = {
       if (cn.classNode.visibleAnnotations == null)
-        cn.classNode.visibleAnnotations = new ArrayList[AnnotationNode]
+        cn.classNode.visibleAnnotations = new java.util.ArrayList[AnnotationNode]
       cn.classNode.visibleAnnotations.asScala
     }
     override def invisibleAnnotations(cn: ClassNodeWrapper) = {
       if (cn.classNode.invisibleAnnotations == null)
-        cn.classNode.invisibleAnnotations = new ArrayList[AnnotationNode]
+        cn.classNode.invisibleAnnotations = new java.util.ArrayList[AnnotationNode]
       cn.classNode.invisibleAnnotations.asScala
     }
   }

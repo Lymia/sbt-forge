@@ -20,8 +20,6 @@ import sbt.{Def, _}
 // TODO: Reobf and deobf of mods.
 // TODO: Work on mod dependencies system.
 // TODO: Work on artifact publishing.
-// TODO: Do an optimization pass over the whole codebase. Especially take a look at all the uses of regexes.
-// TODO: Deal with the memory usage of this plugin
 // TODO: Make our forge binary a proper artifact.
 // TODO: Properly set provided dependencies in .pom file.
 //       (Currently, the pom must be discarded for proper compilation in pretty much all cases.)
