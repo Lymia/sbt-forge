@@ -40,7 +40,7 @@ private object classpath {
     else Option(ClassLoader.getSystemResource(s"$name.class"))
 
   private def loadClassByURL(url: URL) =
-    new ClassNodeWrapper(readClassNode(url.openStream()), noCopy = true)
+    new ClassNodeWrapper(readClassNode(IO.readBytes(url.openStream())), noCopy = true)
 
   // The class responsible for loading class data from the classpath.
   final class ClasspathSearcher(var targetJar: JarData, classpath: Seq[File], log: Logger) {
@@ -60,7 +60,7 @@ private object classpath {
 
     def classLocation(name: String, source: String = null) =
       resolveRaw(name, source)._1
-    def loadClass(name: String, source: String = null) =
+    def loadSymbols(name: String, source: String = null) =
       resolveRaw(name, source)._2
     def allClasses =
       targetJar.classes.keySet ++ classSourcesMap.keySet

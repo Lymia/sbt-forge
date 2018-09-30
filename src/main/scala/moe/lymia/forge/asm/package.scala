@@ -1,7 +1,5 @@
 package moe.lymia.forge
 
-import java.io.InputStream
-
 import org.objectweb.asm.{ClassReader, ClassWriter}
 import org.objectweb.asm.tree.ClassNode
 
@@ -11,10 +9,13 @@ package object asm extends NodeImplicits with JarImplicits {
     cn.accept(cw)
     cw.toByteArray
   }
-  def readClassNode(in: InputStream) = {
-    val cr = new ClassReader(in)
+  def readClassNode(data: Array[Byte], flags: Int = 0) = {
+    val cr = new ClassReader(data)
     val cn = new ClassNode()
-    cr.accept(cn, ClassReader.EXPAND_FRAMES)
+    cr.accept(cn, flags)
     cn
   }
+
+  def readClassSymbols(data: Array[Byte]) =
+    readClassNode(data, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES)
 }

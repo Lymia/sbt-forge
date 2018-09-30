@@ -32,7 +32,7 @@ object JarRemapper {
       // JVMS 5.4.3.2
       if (fs.owner.startsWith("[")) Some(fs)
       else {
-        val cn = searcher.loadClass(fs.owner)
+        val cn = searcher.loadSymbols(fs.owner)
         if (cn.fieldMap.contains(FieldName(fs.name, fs.desc))) Some(fs)
         else if (cn.name == ObjectClass) None
         else cn.interfaces.asScala.flatMap(x => resolveField(FieldSpec(x, fs.name, fs.desc))).headOption orElse
@@ -43,7 +43,7 @@ object JarRemapper {
       // JVMS 5.4.3.3
       if (ms.owner.startsWith("[")) Some(ms)
       else {
-        val cn = searcher.loadClass(ms.owner)
+        val cn = searcher.loadSymbols(ms.owner)
         if (cn.methodMap.contains(MethodName(ms.name, ms.desc))) Some(ms)
         else if (cn.name == ObjectClass) None
         else resolveMethod(MethodSpec(cn.superName, ms.name, ms.desc)) orElse
@@ -82,7 +82,7 @@ object JarRemapper {
       overrides
     }
     private def checkOverridden(subclass: String, superclass: String, mn: MethodName) = {
-      val cn = searcher.loadClass(superclass, subclass)
+      val cn = searcher.loadSymbols(superclass, subclass)
       (if(cn.methodMap.contains(mn) && checkOverrideFrom(subclass, superclass, mn, cn.methodMap(mn).access))
          Set(superclass)
        else Set.empty) ++ classesOverriddenBy(MethodSpec(superclass, mn.name, mn.desc))
@@ -90,7 +90,7 @@ object JarRemapper {
     val classesOverriddenBy: MethodSpec => Set[String] = cachedFunction { ms =>
       if (ms.owner == ObjectClass || ms.owner.startsWith("[")) Set.empty
       else {
-        val cn = searcher.loadClass(ms.owner)
+        val cn = searcher.loadSymbols(ms.owner)
         if ((cn.access & (ACC_PRIVATE | ACC_STATIC)) != 0) Set.empty
         else checkOverridden(ms.owner, cn.superName, MethodName(ms.name, ms.desc)) ++
              cn.interfaces.asScala.flatMap(i => checkOverridden(ms.owner, i, MethodName(ms.name, ms.desc)))
@@ -108,7 +108,7 @@ object JarRemapper {
     val couldRename = mapping.methodMapping.keys.map(x => MethodName(x.name, x.desc)).toSet
     val candidates = new mutable.HashMap[MethodName, mutable.Set[String]] with mutable.MultiMap[MethodName, String]
     for (name <- classList) {
-      val cn = searcher.loadClass(name)
+      val cn = searcher.loadSymbols(name)
       for ((_, mn) <- cn.methodMap if couldRename.contains(MethodName(mn.name, mn.desc)))
         candidates.addBinding(MethodName(mn.name, mn.desc), cn.name)
     }
