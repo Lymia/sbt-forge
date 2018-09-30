@@ -23,6 +23,10 @@ import sbt.{Def, _}
 // TODO: Make our forge binary a proper artifact.
 // TODO: Properly set provided dependencies in .pom file.
 //       (Currently, the pom must be discarded for proper compilation in pretty much all cases.)
+// TODO: Update to 1.x best practices
+// TODO: Add Tags to our tasks.
+// TODO: Use librarymanagement code to better handle dependency shading/extraction.
+// TODO: Make sure the plugin works well in multi-project builds.
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -123,6 +127,8 @@ object BaseForgePlugin extends AutoPlugin {
         "Libraries expected to be provided from Minecraft or Forge.")
       val minecraftProvidedLibraries    = TaskKey[Seq[ModuleID]]("forge-minecraft-provided-libraries",
         "Libraries expected to be provided from Minecraft or Forge, except those specified in excludedOrganizations.")
+      val resolutionModuleId            = TaskKey[ModuleID]("forge-resolution-module-id",
+        "The module ID used in the resolution cache by Forge.")
 
       // Patch and merge client .jars
       val serverDepPrefixes = TaskKey[Seq[String]]("forge-server-dep-prefixes",
@@ -270,29 +276,43 @@ object BaseForgePlugin extends AutoPlugin {
     allDependencies ++= forge.minecraftProvidedLibraries.value,
   )
 
-  private lazy val simpleIvyCtx: Seq[Def.Setting[_]] = Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
-    allDependencies := Seq(),
+  private def simpleIvyCtx(module: TaskKey[ModuleID]): Seq[Def.Setting[_]] =
+    Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
+      allDependencies := Seq(),
+      moduleSettings :=
+        ModuleDescriptorConfiguration(module.value, ModuleInfo(module.value.name))
+          .withValidate(ivyValidate.value)
+          .withScalaModuleInfo(scalaModuleInfo.value)
+          .withDependencies(allDependencies.value.toVector)
+          .withOverrides(dependencyOverrides.value.toVector)
+          .withExcludes(excludeDependencies.value.toVector)
+          .withIvyXML(ivyXML.value)
+          .withConfigurations(ivyConfigurations.value.toVector)
+          .withDefaultConfiguration(defaultConfiguration.value)
+          .withConflictManager(conflictManager.value),
 
-    // We don't actually have any proper products. We use Classpaths only for downloading Maven dependencies.
-    products := Seq(),
-    exportedProducts := Seq(),
-    exportedProductsIfMissing := Seq(),
-    exportedProductsNoTracking := Seq(),
-    exportedProductJars := Seq(),
-    exportedProductJarsIfMissing := Seq(),
-    exportedProductJarsNoTracking := Seq(),
+      // We don't actually have any proper products. We use Classpaths only for downloading Maven dependencies.
+      products := Seq(),
+      exportedProducts := Seq(),
+      exportedProductsIfMissing := Seq(),
+      exportedProductsNoTracking := Seq(),
+      exportedProductJars := Seq(),
+      exportedProductJarsIfMissing := Seq(),
+      exportedProductJarsNoTracking := Seq(),
 
-    artifactPath := forge.cacheRoot.value / "artifact_path_keep_empty",
-    classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
-  )
-  private lazy val forgeIvyCtx: Seq[Def.Setting[_]] = simpleIvyCtx ++ depsFromJar ++ Seq(
-    allDependencies ++= lwjgl.libraries.value,
-    scalaModuleInfo := {
-      val scalaVersion = forge.scalaVersion.value
-      scalaModuleInfo.value.map(_.withScalaFullVersion(scalaVersion)
-                                 .withScalaBinaryVersion(CrossVersion.binaryScalaVersion(scalaVersion)))
-    }
-  )
+      artifactPath := forge.cacheRoot.value / "artifact_path_keep_empty",
+      classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
+    )
+  private def forgeIvyCtx: Seq[Def.Setting[_]] =
+    simpleIvyCtx(forge.resolutionModuleId) ++ depsFromJar ++ Seq(
+      forge.resolutionModuleId := "net.minecraftforge" % "forge" % forge.version.value,
+      allDependencies ++= lwjgl.libraries.value,
+      scalaModuleInfo := {
+        val scalaVersion = forge.scalaVersion.value
+        scalaModuleInfo.value.map(_.withScalaFullVersion(scalaVersion)
+                                   .withScalaBinaryVersion(CrossVersion.binaryScalaVersion(scalaVersion)))
+      }
+    )
   private lazy val projectSettingsCommon =
     depsFromJar ++ inConfig(Forge)(forgeIvyCtx)
 
