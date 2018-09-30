@@ -225,9 +225,10 @@ object BaseForgePlugin extends AutoPlugin {
     task := {
       val (log, binpatches) = (streams.value.log, forge.binpatches.value)
       val cacheDir = forge.depDir.value / s"patch-jar_${forge.version.value}_${outputName.replace('.', '-')}"
+      val excludedPrefixes = forge.serverDepPrefixes.value
       cachedTransform(cacheDir, inputTask.value, forge.forgeDir.value / outputName) { (input, outFile) =>
         val patchSet = BinPatch.readPatchSet(binpatches, patchSection)
-        BinPatch.patchJar(input, outFile, patchSet, log)
+        BinPatch.patchJar(input, outFile, patchSet, excludedPrefixes, log)
       }
     }
 
@@ -369,13 +370,13 @@ object BaseForgePlugin extends AutoPlugin {
     patchJarTask(forge.patchedServerJar, forge.serverJar, "minecraft_server_patched.jar", "server"),
     forge.mergedJar := {
       val log = streams.value.log
-      val (patchedClientJar, patchedServerJar, serverDepPrefixes) =
-        (forge.patchedClientJar.value, forge.patchedServerJar.value, forge.serverDepPrefixes.value)
+      val (patchedClientJar, patchedServerJar) =
+        (forge.patchedClientJar.value, forge.patchedServerJar.value)
       val cacheDir = forge.depDir.value / s"merge-jar_${forge.version.value}"
       val outFile = forge.forgeDir.value / "minecraft_merged.jar"
       trackDependencies(cacheDir, Set(patchedClientJar, patchedServerJar)) {
         log.info("Merging client and server binaries to "+outFile)
-        Merger.merge(patchedClientJar, patchedServerJar, serverDepPrefixes, log).write(outFile)
+        Merger.merge(patchedClientJar, patchedServerJar, log).write(outFile)
         outFile
       }
     },

@@ -62,8 +62,7 @@ private object classpath {
       resolveRaw(name, source)._1
     def loadSymbols(name: String, source: String = null) =
       resolveRaw(name, source)._2
-    def allClasses =
-      targetJar.classes.keySet ++ classSourcesMap.keySet
+    def targetClasses = targetJar.classes.keySet
 
     for(file <- classpath) {
       log.debug(s"Indexing classes in $file")

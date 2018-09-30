@@ -54,12 +54,12 @@ object BinPatch {
       hasher.update(input)
       hasher.getValue.toInt
   }
-  def patchJar(sourceFile: File, targetFile: File, patchSet: PatchSet, log: Logger) {
+  def patchJar(sourceFile: File, targetFile: File, patchSet: PatchSet, serverDepPrefixes: Seq[String], log: Logger) {
     log.info(s"Patching $sourceFile to $targetFile")
     val jarIn  = new ZipFile(sourceFile)
     val jarOut = new ZipOutputStream(new FileOutputStream(targetFile))
     val patcher = new GDiffPatcher
-    for(entry <- jarIn.entries().asScala) {
+    for(entry <- jarIn.entries().asScala if !serverDepPrefixes.exists(x => entry.getName.startsWith(x))) {
       patchSet.get(entry.getName) match {
         case Some(patch) =>
           log.debug(s"Applying patch ${patch.patchName}")

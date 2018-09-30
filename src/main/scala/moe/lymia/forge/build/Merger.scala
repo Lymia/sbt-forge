@@ -36,8 +36,7 @@ object Merger {
   private object InnerClassData {
     def apply(icn: InnerClassNode): InnerClassData = apply(icn.innerName, icn.name, icn.outerName)
   }
-  def merge(clientPath: File, serverPath: File, serverDepPrefixes: Seq[String],
-            log: Logger) = {
+  def merge(clientPath: File, serverPath: File, log: Logger) = {
     val client = JarData.load(clientPath).stripSignatures
     val server = JarData.load(serverPath).stripSignatures
     val target = new JarData()
@@ -49,11 +48,10 @@ object Merger {
         if(!util.Arrays.equals(cdata, data))
           sys.error(s"Resource $name does not match between client and server.")
       case None =>
-        if (!serverDepPrefixes.exists(x => name.startsWith(x)))
-          target.resources.put(name, data)
+        target.resources.put(name, data)
     }
 
-    for(clientClass <- client.allClasses) {
+    for (clientClass <- client.allClasses) {
       log.debug(s"Copying class ${clientClass.name} from client.")
       target.putClass(clientClass.name, clientClass)
 
@@ -74,11 +72,9 @@ object Merger {
             if (!clientInnerClasses.contains(InnerClassData(serverInnerClass)))
               clientClass.innerClasses.add(serverInnerClass)
         case None =>
-          if (!serverDepPrefixes.exists(x => serverClass.name.startsWith(x))) {
-            log.debug(s"Copying class ${serverClass.name} from server.")
-            target.putClass(serverClass.name, serverClass)
-            markSideOnly(serverClass, "SERVER")
-          }
+          log.debug(s"Copying class ${serverClass.name} from server.")
+          target.putClass(serverClass.name, serverClass)
+          markSideOnly(serverClass, "SERVER")
       }
     }
 

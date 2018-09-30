@@ -103,9 +103,8 @@ object JarRemapper {
   }
 
   // Find all methods that could possibly be renamed.
-  private def possibleRenames(searcher: ClasspathSearcher, mapping: Mapping,
-                              classList: collection.Set[String]) = {
-    val couldRename = mapping.methodMapping.keys.map(x => MethodName(x.name, x.desc)).toSet
+  private def possibleRenamesForList(searcher: ClasspathSearcher, mapping: Mapping, classList: collection.Set[String],
+                                     couldRename: Set[MethodName]) = {
     val candidates = new mutable.HashMap[MethodName, mutable.Set[String]] with mutable.MultiMap[MethodName, String]
     for (name <- classList) {
       val cn = searcher.loadSymbols(name)
@@ -113,6 +112,14 @@ object JarRemapper {
         candidates.addBinding(MethodName(mn.name, mn.desc), cn.name)
     }
     for ((MethodName(name, desc), set) <- candidates; owner <- set) yield MethodSpec(owner, name, desc)
+  }
+  private def possibleRenames(searcher: ClasspathSearcher, resolver: OverrideResolver,
+                              mapping: Mapping) = {
+    val couldRename = mapping.methodMapping.keys.map(x => MethodName(x.name, x.desc)).toSet
+    val targetClasses = searcher.targetClasses
+    val targetJarCandidates = possibleRenamesForList(searcher, mapping, targetClasses, couldRename)
+    val superTypes = targetJarCandidates.toSet.flatMap(resolver.classesOverriddenBy) -- targetClasses
+    targetJarCandidates ++ possibleRenamesForList(searcher, mapping, superTypes, couldRename)
   }
 
   // Collapse all methods related to each other via inheritance into sets.
@@ -122,7 +129,7 @@ object JarRemapper {
     val methodMembership = new mutable.HashMap[MethodSpec, Int]
 
     var currentName = 0
-    val renamed = possibleRenames(searcher, mapping, searcher.allClasses).toSeq
+    val renamed = possibleRenames(searcher, resolver, mapping)
     for (candidate <- renamed) {
       val name = currentName
       methodMembership.put(candidate, name)
