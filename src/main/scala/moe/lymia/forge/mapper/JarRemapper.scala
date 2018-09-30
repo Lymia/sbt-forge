@@ -20,15 +20,14 @@ object JarRemapper {
   // Map parameter names from MCP configs
   def mapParams(targetJar: JarData, params: File) {
     val paramMapping = Mapping.readCsvMappings(IO.readLines(params))
-    for((_, cn) <- targetJar.classes;
-        mn      <- cn.methodMap.values if mn.localVariables != null;
-        lvn     <- mn.localVariables.asScala;
-        target  <- paramMapping.get(lvn.name))
-      lvn.name = target
+    for (cn     <- targetJar.allClasses;
+         mn     <- cn.methodMap.values if mn.localVariables != null;
+         lvn    <- mn.localVariables.asScala;
+         target <- paramMapping.get(lvn.name)) lvn.name = target
   }
 
   // Field/method resolver
-  private class ResolvingMapper(searcher: ClasspathSearcher, mapper: Mapping) extends Remapper {
+  private final class ResolvingMapper(searcher: ClasspathSearcher, mapper: Mapping) extends Remapper {
     private val resolveField: FieldSpec => Option[FieldSpec] = cachedFunction { fs =>
       // JVMS 5.4.3.2
       if (fs.owner.startsWith("[")) Some(fs)
@@ -67,7 +66,7 @@ object JarRemapper {
   }
 
   // Method override resolver
-  private class OverrideResolver(searcher: ClasspathSearcher) {
+  private final class OverrideResolver(searcher: ClasspathSearcher) {
     private def checkOverrideFrom(caller: String, owner: String, method: MethodName, access: Int) = {
       // JVMS 5.4.5
       val isStatic = (access & ACC_STATIC) != 0

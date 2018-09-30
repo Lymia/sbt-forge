@@ -50,7 +50,7 @@ object FinalStatus {
   case object NoChange    extends FinalStatus(0, "")
 }
 
-case class ATFlags(newAccess: AccessLevel, finalFlagChange: FinalStatus) {
+final case class ATFlags(newAccess: AccessLevel, finalFlagChange: FinalStatus) {
   def transform(acc: Int) = finalFlagChange.transform(newAccess.transform(acc))
 
   def &&(other: ATFlags) =
@@ -119,7 +119,7 @@ object ATTarget {
   }
 }
 
-case class AccessTransformer(transformations: Map[ATTarget, ATFlags]) {
+final case class AccessTransformer(transformations: Map[ATTarget, ATFlags]) {
   private def forTarget(target: ATTarget) = transformations.getOrElse(target, ATFlags.Null)
 
   private def transformClassAccess(name: String, access: Int) =
@@ -156,7 +156,15 @@ case class AccessTransformer(transformations: Map[ATTarget, ATFlags]) {
       super.visitMethod(transformMethodAccess(className, MethodName(name, desc), access),
                         name, desc, signature, exceptions)
   }
-  def transformJar(jar: JarData) = jar.mapWithVisitor(this.makeVisitor)
+  private lazy val isClassMapped = transformations.keySet.map {
+    case ATTarget.Class(name) => name
+    case ATTarget.InnerClass(owner, _) => owner
+    case ATTarget.Field(owner, _) => owner
+    case ATTarget.Method(owner, _) => owner
+    case ATTarget.FieldWildcard(owner) => owner
+    case ATTarget.MethodWildcard(owner) => owner
+  }
+  def transformJar(jar: JarData) = jar.mapWithVisitor(this.makeVisitor, isClassMapped.contains)
 
   def getAtLines = transformations.filter(!_._1.isSynthetic).map(x => s"${x._2} ${x._1}").toSeq
   def writeTo(file: File) = IO.writeLines(file, "# Merged by sbt-forge" +: getAtLines)

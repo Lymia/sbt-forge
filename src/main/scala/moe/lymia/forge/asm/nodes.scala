@@ -22,7 +22,7 @@ trait AnnotationContainer[T] {
 case class MethodName(name: String, desc: String)
 case class FieldName (name: String, desc: String)
 
-class ClassNodeWrapper(private var inNode: ClassNode = null, noCopy: Boolean = false) {
+final class ClassNodeWrapper(private var inNode: ClassNode = null, noCopy: Boolean = false) {
   val classNode = if(noCopy && inNode != null) inNode else {
     val cn = new ClassNode()
     if(inNode != null) inNode.accept(cn)
@@ -30,24 +30,17 @@ class ClassNodeWrapper(private var inNode: ClassNode = null, noCopy: Boolean = f
   }
   inNode = null // remove reference so we don't cause big leaks
 
-  val methodMap = new mutable.LinkedHashMap[MethodName, MethodNode]
-  def addMethod(n: MethodNode) = methodMap.put(n.methodName, n)
-  for(node <- classNode.methods.asScala) addMethod(node)
-  classNode.methods = new MapWrapperSeq(methodMap).asJava
-
-  val fieldMap  = new mutable.LinkedHashMap[FieldName, FieldNode]
-  def addField(n: FieldNode) = fieldMap.put(n.fieldName, n)
-  for(node <- classNode.fields.asScala) addField(node)
-  classNode.fields = new MapWrapperSeq(fieldMap).asJava
-
-  def syncNames() {
-    val methods = methodMap.values.toSeq
-    methodMap.clear()
-    for(m <- methods) addMethod(m)
-
-    val fields  = fieldMap.values.toSeq
-    fieldMap.clear()
-    for(f <- fields) addField(f)
+  lazy val methodMap = {
+    val map = new mutable.LinkedHashMap[MethodName, MethodNode]
+    for(n <- classNode.methods.asScala) map.put(n.methodName, n)
+    classNode.methods = new MapWrapperSeq(map).asJava
+    map
+  }
+  lazy val fieldMap = {
+    val map = new mutable.LinkedHashMap[FieldName, FieldNode]
+    for(n <- classNode.fields.asScala) map.put(n.fieldName, n)
+    classNode.fields = new MapWrapperSeq(map).asJava
+    map
   }
 
   override def clone() = new ClassNodeWrapper(classNode)

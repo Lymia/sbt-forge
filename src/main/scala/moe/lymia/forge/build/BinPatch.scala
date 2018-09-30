@@ -12,10 +12,10 @@ import sbt._
 import scala.collection.JavaConverters._
 
 object BinPatch {
-  case class PatchData(name: String,
-                       untransformedName: String, transformedName: String, 
-                       inputChecksum: Option[Int], patchData: Array[Byte],
-                       modifiedTime: Long) {
+  final case class PatchData(name: String,
+                             untransformedName: String, transformedName: String,
+                             inputChecksum: Option[Int], patchData: Array[Byte],
+                             modifiedTime: Long) {
     lazy val patchName = name+" ("+untransformedName+" -> "+transformedName+")"
   }
   type PatchSet = Map[String, PatchData]
@@ -54,7 +54,6 @@ object BinPatch {
       hasher.update(input)
       hasher.getValue.toInt
   }
-  case object ChecksumException extends Exception
   def patchJar(sourceFile: File, targetFile: File, patchSet: PatchSet, log: Logger) {
     log.info(s"Patching $sourceFile to $targetFile")
     val jarIn  = new ZipFile(sourceFile)
@@ -79,7 +78,7 @@ object BinPatch {
               if(hash != expected) {
                 log.error(s"${entry.getName} does not match the checksum expected by ${patch.patchName}. "+
                           "The patch expects "+expected.toHexString+", while the checksum of the file is "+hash.toHexString+".\n")
-                throw ChecksumException
+                sys.error(s"Checksum mismatch in ${entry.getName}")
               }
           }
           jarOut.write(patcher.patch(data, patch.patchData))

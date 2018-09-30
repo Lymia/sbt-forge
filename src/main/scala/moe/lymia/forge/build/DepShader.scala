@@ -12,7 +12,7 @@ import sbt.{File, IO, Logger, ModuleID}
 
 import scala.collection.JavaConverters._
 
-case class ShadeMapping(classMapping: Map[String, String]) extends Remapper {
+final case class ShadeMapping(classMapping: Map[String, String]) extends Remapper {
   override def map(typeName: String): String = classMapping.getOrElse(typeName, typeName)
 
   def mapJar(jar: JarData) = jar.mapWithVisitor(cv => new ClassRemapper(cv, this))

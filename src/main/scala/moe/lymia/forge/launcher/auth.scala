@@ -14,7 +14,7 @@ import play.api.libs.json._
 
 import scala.collection.JavaConverters._
 
-private case class AccessToken(username: String, clientToken: String, data: Map[String, JsValue] = Map()) {
+private final case class AccessToken(username: String, clientToken: String, data: Map[String, JsValue] = Map()) {
   def update(auth: UserAuthentication) =
     copy(data = auth.saveForStorage().asScala.mapValues {
       case x: String => Json.toJson(x)
@@ -31,7 +31,7 @@ private case class AccessToken(username: String, clientToken: String, data: Map[
       case _ => sys.error("Invalid JSON in token file.")
     }.asJava
 }
-private case class AccessTokenWrapper(data: Option[AccessToken])
+private final case class AccessTokenWrapper(data: Option[AccessToken])
 
 private object AuthManager {
   private implicit val accessTokenSerializer = Json.format[AccessToken]
@@ -41,7 +41,7 @@ private object AuthManager {
   private def generateClientToken() =
     Base64.encodeBase64URLSafeString(rng.generateSeed(32))
 }
-private class AuthManager(cacheDir: File, log: Logger) {
+private final class AuthManager(cacheDir: File, log: Logger) {
   import AuthManager._
 
   private lazy val authDataFile = cacheDir / "client_token.json"

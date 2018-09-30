@@ -43,7 +43,7 @@ private object classpath {
     new ClassNodeWrapper(readClassNode(url.openStream()), noCopy = true)
 
   // The class responsible for loading class data from the classpath.
-  class ClasspathSearcher(var targetJar: JarData, classpath: Seq[File], log: Logger) {
+  final class ClasspathSearcher(var targetJar: JarData, classpath: Seq[File], log: Logger) {
     private val classSourcesMap  = new mutable.HashMap[String, URL]
     private val classLocationMap = new mutable.HashMap[String, String]
 
@@ -52,7 +52,7 @@ private object classpath {
         .orElse(classSourcesMap.get(name).map(x => (classLocationMap(name), loadClassByURL(x))))
     }
     private def resolveRawAll(name: String) =
-      targetJar.classes.get(name).map(x => ("<target jar>", x)).orElse(resolveRawClasspath(name))
+      targetJar.getClass(name).map(x => ("<target jar>", x)).orElse(resolveRawClasspath(name))
     private def resolveRaw(name: String, source: String) =
       resolveRawAll(name).getOrElse(sys.error(
         s"Validation error: Reference to undefined class $name" +

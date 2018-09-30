@@ -17,7 +17,7 @@ object Exceptor {
   def applyExceptorJson(inputJar: JarData, json: String, log: Logger) {
     Json.parse(json).as[Map[String, JsObject]] foreach { t =>
       val (name, data) = t
-      inputJar.classes.get(name) match { 
+      inputJar.getClass(name) match {
         case Some(cn) =>
           for(obj             <- (data \ "enclosingMethod").asOpt[JsObject];
               outerMethod     <- (obj \ "name").asOpt[String];
@@ -74,7 +74,7 @@ object Exceptor {
   val funcValueRegex = """([^|]*)\|(.*)""".r
   def applyExcFile(inputJar: JarData, in: InputStream, log: Logger) {
     def getMethod(className: String, name: String, desc: String) =
-      inputJar.classes.get(className).flatMap(_.methodMap.get(MethodName(name, desc)))
+      inputJar.getClass(className).flatMap(_.methodMap.get(MethodName(name, desc)))
 
     val prop = new Properties()
     prop.load(in)
@@ -106,28 +106,27 @@ object Exceptor {
   }
   val srgFuncNameRegex = "func_([0-9]+)_.*".r
   def addDefaultParameterNames(inputJar: JarData) = {
-    for((clname, cn) <- inputJar.classes;
-        (MethodName(name, desc), mn) <- cn.methodMap) name match {
+    for(cn <- inputJar.allClasses;
+        mn <- cn.methods.asScala) mn.name match {
       case srgFuncNameRegex(id) =>
         if(mn.localVariables != null && mn.localVariables.isEmpty) {
           val paramCount = Type.getArgumentTypes(mn.desc).length
           val paramStart = if((mn.access & ACC_STATIC) == 0) 1 else 0
-          addParameters(clname, mn, (0 until paramCount).map(n => "p_"+id+"_"+(n+paramStart)+"_"))
+          addParameters(cn.name, mn, (0 until paramCount).map(n => "p_"+id+"_"+(n+paramStart)+"_"))
         }
       case _ =>
     }
   }
 
-  def stripSynthetic(inputJar: JarData) = {
-    for((_, cn) <- inputJar.classes) if(cn.superName != "java/lang/Enum") {
-      for(mn <- cn.methodMap.values) mn.access = mn.access & ~ACC_SYNTHETIC
-      for(fn <- cn.fieldMap .values) fn.access = fn.access & ~ACC_SYNTHETIC
+  def stripSynthetic(inputJar: JarData) =
+    for (cn <- inputJar.allClasses) if (cn.superName != "java/lang/Enum") {
+      for(mn <- cn.methods.asScala) mn.access = mn.access & ~ACC_SYNTHETIC
+      for(fn <- cn.fields .asScala) fn.access = fn.access & ~ACC_SYNTHETIC
     }
-  }
 
   def stripSnowmen(inputJar: JarData) =
-    for ((_, cn) <- inputJar.classes;
-         mn <- cn.methodMap.values if mn.localVariables != null) {
+    for (cn <- inputJar.allClasses;
+         mn <- cn.methods.asScala if mn.localVariables != null) {
       var id = 1
       for (lv <- mn.localVariables.asScala if lv.name == "☃") {
         lv.name = s"var_$id"

@@ -10,12 +10,13 @@ import sbt._
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
-case class PartialFieldSpec(owner: String, name: String)
-case class FieldSpec       (owner: String, name: String, desc: String)
-case class MethodSpec      (owner: String, name: String, desc: String)
+final case class PartialFieldSpec(owner: String, name: String)
+final case class FieldSpec       (owner: String, name: String, desc: String)
+final case class MethodSpec      (owner: String, name: String, desc: String)
 
-case class Mapping(packageMapping: Map[String, String], classMapping: Map[String, String],
-                   fieldMapping: Map[FieldSpec, String], methodMapping: Map[MethodSpec, String]) extends Remapper {
+final case class Mapping(packageMapping: Map[String, String], classMapping: Map[String, String],
+                         fieldMapping: Map[FieldSpec, String], methodMapping: Map[MethodSpec, String]
+                        ) extends Remapper {
   private lazy val partialFieldMapping = {
     val mappings =
       new mutable.HashMap[PartialFieldSpec, mutable.Set[String]]() with mutable.MultiMap[PartialFieldSpec, String]
@@ -92,10 +93,9 @@ case class Mapping(packageMapping: Map[String, String], classMapping: Map[String
   // Helper methods for various compile tasks
   def findRemappableInnerClass(jar: JarData, log: Logger) = {
     val newMappings = new mutable.HashMap[String, String]()
-    for((name, cn) <- jar.classes             if  classMapping.contains(name);
-        icn        <- cn.innerClasses.asScala if !classMapping.contains(icn.name) &&
-                                                  icn.name.startsWith(s"$name$$")) {
-        val newName = s"${classMapping(name)}${icn.name.substring(name.length)}"
+    for(cn  <- jar.allClasses          if  classMapping.contains(cn.name);
+        icn <- cn.innerClasses.asScala if !classMapping.contains(icn.name) && icn.name.startsWith(s"${cn.name}$$")) {
+        val newName = s"${classMapping(cn.name)}${icn.name.substring(cn.name.length)}"
         log.debug(s"Adding mapping for inner class ${icn.name} to $newName")
         newMappings.put(icn.name, newName)
     }
@@ -116,13 +116,13 @@ object Mapping {
     val csvMethodMappings = readCsvMappings(IO.readLines(methodsFile))
 
     val fieldMappings =
-      for ((className, cn) <- ref.classes;
+      for (cn <- ref.allClasses;
            (FieldName(name, desc), _) <- cn.fieldMap;
-           target <- csvFieldMappings.get(name)) yield (FieldSpec(className, name, desc), target)
+           target <- csvFieldMappings.get(name)) yield (FieldSpec(cn.name, name, desc), target)
     val methodMappings =
-      for ((className, cn) <- ref.classes;
+      for (cn <- ref.allClasses;
            (MethodName(name, desc), _) <- cn.methodMap;
-           target <- csvMethodMappings.get(name)) yield (MethodSpec(className, name, desc), target)
+           target <- csvMethodMappings.get(name)) yield (MethodSpec(cn.name, name, desc), target)
 
     Mapping(Map(), Map(), fieldMappings.toMap, methodMappings.toMap).stripTrivial()
   }
@@ -144,7 +144,7 @@ object Mapping {
       case SRGLineRegex("CL", CL(source, target)) =>
         if(source != target) classMapping.put(source, target)
       case SRGLineRegex("FD", FD(sOwner, sName, _, tName)) =>
-        ref.classes.get(sOwner) match {
+        ref.getClass(sOwner) match {
           case Some(cn) =>
             for((FieldName(name, desc), _) <- cn.fieldMap if name == sName)
               fieldMapping.put(FieldSpec(sOwner, sName, desc), tName)

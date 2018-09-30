@@ -53,17 +53,17 @@ object Merger {
           target.resources.put(name, data)
     }
 
-    for((name, clientClass) <- client.classes) {
-      log.debug(s"Copying class $name from client.")
-      target.classes.put(name, clientClass)
+    for(clientClass <- client.allClasses) {
+      log.debug(s"Copying class ${clientClass.name} from client.")
+      target.putClass(clientClass.name, clientClass)
 
-      if (!server.classes.contains(name))
+      if (!server.classes.contains(clientClass.name))
         markSideOnly(clientClass, "CLIENT")
     }
-    for ((name, serverClass) <- server.classes) {
-      target.classes.get(name) match {
+    for (serverClass <- server.allClasses) {
+      target.getClass(serverClass.name) match {
         case Some(clientClass) =>
-          log.debug(s"Merging class $name between server and client.")
+          log.debug(s"Merging class ${serverClass.name} between server and client.")
 
           mergeLists(clientClass.methodMap, serverClass.methodMap)
           mergeLists(clientClass.fieldMap, serverClass.fieldMap)
@@ -74,9 +74,9 @@ object Merger {
             if (!clientInnerClasses.contains(InnerClassData(serverInnerClass)))
               clientClass.innerClasses.add(serverInnerClass)
         case None =>
-          if (!serverDepPrefixes.exists(x => name.startsWith(x))) {
-            log.debug(s"Copying class $name from server.")
-            target.classes.put(name, serverClass)
+          if (!serverDepPrefixes.exists(x => serverClass.name.startsWith(x))) {
+            log.debug(s"Copying class ${serverClass.name} from server.")
+            target.putClass(serverClass.name, serverClass)
             markSideOnly(serverClass, "SERVER")
           }
       }
