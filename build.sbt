@@ -32,7 +32,7 @@ libraryDependencies += "com.google.guava" % "guava" % "26.0-jre"
 
 libraryDependencies += "com.mojang" % "authlib" % "1.5.26"
 
-scalacOptions ++= Seq("-Xlint", "-feature")
+scalacOptions ++= Seq("-Xlint", "-feature", "-opt:l:inline", "-opt-inline-from:**:!sbt.**")
 
 pomExtra :=
   <url>https://github.com/Lymia/sbt-forge</url>
