@@ -1,6 +1,7 @@
 package moe.lymia.forge.build
 
-import java.io.{ByteArrayOutputStream, FileOutputStream, PrintStream}
+import java.io.{ByteArrayOutputStream, PrintStream}
+import java.nio.charset.StandardCharsets
 import java.util.jar.{Attributes, Manifest}
 import java.util.zip.ZipFile
 
@@ -17,26 +18,31 @@ final case class ShadeMapping(classMapping: Map[String, String]) extends Remappe
 
   def mapJar(jar: JarData) = jar.mapWithVisitor(cv => new ClassRemapper(cv, this))
 
-  def write(target: File) {
-    val out = new PrintStream(new FileOutputStream(target))
+  def toByteArray = {
+    val bytes = new ByteArrayOutputStream()
+    val out = new PrintStream(bytes, false, "UTF-8")
     try {
       for ((from, to) <- classMapping) out.println(s"shade $from -> $to")
     } finally {
       out.close()
     }
+    bytes.toByteArray
   }
 }
 object ShadeMapping {
-  def read(target: File) = ShadeMapping(IO.readLines(target).map(_.split(" ")).map {
-    case Array("shade", from, "->", to) => from -> to
-    case line => sys.error(s"Failed to parse shade mapping line: ${line.mkString(" ")}")
-  }.toMap)
+  def parse(bytes: Array[Byte]) =
+    ShadeMapping(new String(bytes, StandardCharsets.UTF_8).split("\n").map(_.split(" ")).map {
+      case Array("shade", from, "->", to) => from -> to
+      case line => sys.error(s"Failed to parse shade mapping line: ${line.mkString(" ")}")
+    }.toMap)
 }
 
 object DepShader {
   private val ContainedDeps = new Attributes.Name("ContainedDeps")
   private val MavenArtifact = new Attributes.Name("Maven-Artifact")
   private val Timestamp     = new Attributes.Name("Timestamp")
+
+  private val ShadeMappingRes = "META-INF/sbt-forge/shade-mapping.sfmap"
 
   private def addExtractedDep(target: JarData, file: File, moduleId: Option[ModuleID]) = {
     val prefix = findUnusedFile(s"META-INF/libraries/${file.getName}",
@@ -63,18 +69,28 @@ object DepShader {
     val deps = if (currentDeps.isEmpty) fileName else s"$currentDeps $fileName"
     target.manifest.getMainAttributes.put(ContainedDeps, deps)
   }
-  def shadeDeps(target: JarData,
-                depList: Seq[(JarData, Option[String])],
-                extractedDeps: Seq[(File, Option[ModuleID])],
-                log: Logger = null) = {
+  def generateDepsJar(depList: Seq[(File, Option[String])], extractedDeps: Seq[(File, Option[ModuleID])],
+                      log: Logger = null) = {
+    val depFiles = depList.map(x => (JarData.load(x._1).stripSignatures, x._2))
     val shadeMapping =
-      ShadeMapping((for ((dep, shadePrefix) <- depList;
-                          name <- dep.classes.keySet;
-                          shadePrefix <- shadePrefix) yield name -> s"$shadePrefix/$name").toMap)
-    val merged = JarData.mergeAll(depList.map(_._1) :+ target, log)
-    merged.manifest = target.manifest
+      ShadeMapping((for ((dep, shadePrefix) <- depFiles;
+                         name <- dep.classes.keySet;
+                         shadePrefix <- shadePrefix) yield name -> s"$shadePrefix/$name").toMap)
+    val merged = JarData.mergeAll(depFiles.map(_._1), log)
     val mapped = shadeMapping.mapJar(merged)
+    mapped.manifest = new Manifest()
+    mapped.manifest.getMainAttributes.put(Attributes.Name.MANIFEST_VERSION, "1.0")
     for ((file, moduleId) <- extractedDeps) addExtractedDep(mapped, file, moduleId)
+    mapped.resources.put(ShadeMappingRes, shadeMapping.toByteArray)
     mapped
+  }
+  def addDepsToJar(target: File, dep: File) = {
+    val targetJar = JarData.load(target)
+    val depJar = JarData.load(dep)
+    val data = depJar.resources.getOrElse(ShadeMappingRes, sys.error(s"$ShadeMappingRes not found in shaded deps."))
+    val shadeMapping = ShadeMapping.parse(data)
+    val mappedTarget = shadeMapping.mapJar(targetJar)
+    depJar.resources.remove(ShadeMappingRes)
+    depJar.mergeWith(mappedTarget)
   }
 }

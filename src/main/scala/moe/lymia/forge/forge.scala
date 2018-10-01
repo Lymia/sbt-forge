@@ -165,8 +165,8 @@ object BaseForgePlugin extends AutoPlugin {
         "The package to move shaded dependencies into. It is recommended to override this.")
       val shadePolicy     = TaskKey[Map[ShadedArtifact, ShadePolicy]]("forge-shade-policy",
         "The policy that decides which dependencies are shaded into the mod jarl.")
-      val shadedDepJar    = TaskKey[(File, File)]("forge-shaded-dep-jar",
-        "Shade all shaded dependencies")
+      val shadedDepJar    = TaskKey[File]("forge-shaded-dep-jar",
+        "Shade all dependencies into a single .jar for faster merging")
       val shadedJar       = TaskKey[File]("forge-shaded-jar",
         "The MCP named mod .jar with dependencies shaded into it")
 
@@ -567,12 +567,12 @@ object BaseForgePlugin extends AutoPlugin {
     forge.shadePolicy ++=
       (fullClasspath in Forge).value.map(x => ShadedArtifact(x) -> ShadePolicy.DontShade).toMap,
     forge.shadePolicy += ShadedArtifact.Unmanaged(forge.atForgeBinary.value) -> ShadePolicy.DontShade,
-    forge.shadedJar := {
+    forge.shadedDepJar := {
       val log = streams.value.log
 
-      val cacheDir = forge.depDir.value / "shaded-jar"
+      val cacheDir = forge.depDir.value / "shaded-dep-jar"
       val modJar = (packageBin in Compile).value
-      val outFile = crossTarget.value / appendToFilename(modJar.getName, "_shaded")
+      val outFile = crossTarget.value / appendToFilename(modJar.getName, "_deps")
 
       val policy = forge.shadePolicy.value
       val classpath = (dependencyClasspath in Compile).value
@@ -591,13 +591,20 @@ object BaseForgePlugin extends AutoPlugin {
         case _ => None
       })
 
-      trackDependencies(cacheDir, shadedDeps.map(_._1).toSet + modJar) {
+      trackDependencies(cacheDir, shadedDeps.map(_._1).toSet) {
         log.info(s"Shading mod dependencies to $outFile...")
-        val shadedJar = DepShader.shadeDeps(
-          JarData.load(modJar), shadedDeps.map(x => (JarData.load(x._1), x._2)), extractedDeps, log)
+        val shadedJar = DepShader.generateDepsJar(shadedDeps, extractedDeps, log)
         shadedJar.write(outFile)
         outFile
       }
+    },
+    forge.shadedJar := {
+      val log = streams.value.log
+      val modJar = (packageBin in Compile).value
+      val outFile = crossTarget.value / appendToFilename(modJar.getName, "_shaded")
+      log.info(s"Writing shaded mod jar to $outFile")
+      DepShader.addDepsToJar(modJar, forge.shadedDepJar.value).write(outFile)
+      outFile
     },
 
     // Launcher bindings
