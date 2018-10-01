@@ -460,7 +460,7 @@ object BaseForgePlugin extends AutoPlugin {
       val cacheDir = forge.depDir.value / s"srg2mcp-sfmap_${forge.version.value}_${forge.mappings.value}"
       val (fieldsFile, methodsFile) = (forge.fieldsMapCsv.value, forge.methodsMapCsv.value)
       val srgForgeBinary = forge.srgForgeBinary.value
-      val outFile = forge.forgeDir.value / s"srg2mcp-${forge.mappings.value}.sfmap"
+      val outFile = forge.forgeDir.value / s"srg2mcp-${forge.mappings.value}.json"
 
       trackDependencies(cacheDir, Set(fieldsFile, methodsFile, srgForgeBinary)) {
         log.info(s"Generating $outFile...")
@@ -474,7 +474,7 @@ object BaseForgePlugin extends AutoPlugin {
 
       val cacheDir = forge.depDir.value / s"mcp2srg-sfmap_${forge.version.value}_${forge.mappings.value}"
       val mappingCache = forge.mappingCache.value
-      val outFile = forge.forgeDir.value / s"mcp2srg-${forge.mappings.value}.sfmap"
+      val outFile = forge.forgeDir.value / s"mcp2srg-${forge.mappings.value}.json"
 
       cachedTransform(cacheDir, mappingCache, outFile) { (mappingCache, outFile) =>
         log.info(s"Generating $outFile...")
