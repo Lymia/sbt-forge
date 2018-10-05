@@ -4,7 +4,7 @@ import java.io._
 import java.net.URL
 import java.util.{Locale, UUID}
 
-import moe.lymia.forge.LWJGLPlugin.autoImport._
+import moe.lymia.forge.LWJGLNativesPlugin.autoImport._
 import moe.lymia.forge.Utils._
 import moe.lymia.forge.asm._
 import moe.lymia.forge.build._
@@ -20,19 +20,21 @@ import sbt.{Def, _}
 // TODO: Reobf and deobf of mods.
 // TODO: Work on mod dependencies system.
 // TODO: Work on artifact publishing.
-// TODO: Make our forge binary a proper artifact.
-// TODO: Properly set provided dependencies in .pom file.
-//       (Currently, the pom must be discarded for proper compilation in pretty much all cases.)
+// TODO: Do something so that dependencies of a sbt-forge mod doesn't try to pull unnecessary dependencies.
 // TODO: Update to 1.x best practices
 // TODO: Add Tags to our tasks.
-// TODO: Use librarymanagement code to better handle dependency shading/extraction.
 // TODO: Make sure the plugin works well in multi-project builds.
+// TODO: Are there any dependencies that we must *not* attempt to deobf?
+// TODO: Implement extraction of dependencies from the classpath.
+// TODO: Consider integrating the recently split ForgeGradle 3.0 libraries?
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
     // Configurations
-    val Forge = config("Forge") extend Default describedAs
-      "A configuration used to build Forge binaries."
+    val Forge = config("forge") describedAs "Dependencies of Forge itself."
+    val Extract = config("extract") describedAs "Dependencies that should be extracted from the mod jar."
+    val Shade = config("shade") describedAs "Dependencies that should be shaded into the mod jar."
+    val ForgeCompile = config("compile") extend (Forge, Extract, Shade, Optional)
 
     // Task/setting/input keys
     object forge {
@@ -121,13 +123,11 @@ object BaseForgePlugin extends AutoPlugin {
         "Extracts the access transformer used by Minecraft Forge itself.")
 
       // Load forge's dependency .json file
-      val excludedOrganizations         = SettingKey[Set[String]]("forge-excluded-organizations",
-        "Organizations excluded from dependency autoloading")
-      val minecraftAllProvidedLibraries = TaskKey[Seq[ModuleID]]("forge-all-minecraft-provided-libraries",
+      val excludedOrganizations      = SettingKey[Set[String]]("forge-excluded-organizations",
+        "Organizations excluded from being loaded into the compile classpath")
+      val minecraftProvidedLibraries = TaskKey[Seq[ModuleID]]("forge-minecraft-provided-libraries",
         "Libraries expected to be provided from Minecraft or Forge.")
-      val minecraftProvidedLibraries    = TaskKey[Seq[ModuleID]]("forge-minecraft-provided-libraries",
-        "Libraries expected to be provided from Minecraft or Forge, except those specified in excludedOrganizations.")
-      val resolutionModuleId            = TaskKey[ModuleID]("forge-resolution-module-id",
+      val resolutionModuleId         = TaskKey[ModuleID]("forge-resolution-module-id",
         "The module ID used in the resolution cache by Forge.")
 
       // Patch and merge client .jars
@@ -163,8 +163,12 @@ object BaseForgePlugin extends AutoPlugin {
       // Dependency shading
       val depShadePrefix  = TaskKey[String]("forge-dep-shade-prefix",
         "The package to move shaded dependencies into. It is recommended to override this.")
-      val shadePolicy     = TaskKey[Map[ShadedArtifact, ShadePolicy]]("forge-shade-policy",
-        "The policy that decides which dependencies are shaded into the mod jarl.")
+      val shadeScalaLibs  = SettingKey[Boolean]("forge-shade-scala-libs",
+        "Whether to shade the scala-library library.")
+      val autoExtractDeps = SettingKey[Boolean]("forge-auto-extract-deps",
+        "Whether to automatically set up dependencies for extraction.")
+      val shadeInfo       = TaskKey[ShadeInfo]("forge-shade-info",
+        "Calculate which dependencies should be shaded or extracted.")
       val shadedDepJar    = TaskKey[File]("forge-shaded-dep-jar",
         "Shade all dependencies into a single .jar for faster merging")
       val shadedJar       = TaskKey[File]("forge-shaded-jar",
@@ -172,36 +176,11 @@ object BaseForgePlugin extends AutoPlugin {
 
       // Run Minecraft
       val runOptions   = TaskKey[ForkOptions]("forge-run-options", "Fork options for running Minecraft")
-      val modClasspath = TaskKey[Seq[File]]("forge-mod-classpath", "A list of mods loaded by runClient and runServer")
+      val modClasspath = TaskKey[Classpath]("forge-mod-classpath", "A list of mods loaded by runClient and runServer")
       val login        = InputKey[Unit]("login", "Logs you into a Minecraft account")
       val logout       = InputKey[Unit]("logout", "Logs you out of your Minecraft account")
       val runClient    = InputKey[Unit]("run-client", "Runs the Minecraft client.")
       val runServer    = InputKey[Unit]("run-server", "Runs the Minecraft server")
-    }
-
-    sealed trait ShadePolicy {
-      def isShaded = this match {
-        case ShadePolicy.Shade | ShadePolicy.ShadeToPackage(_) | ShadePolicy.ShadeNoRename => true
-        case _ => false
-      }
-    }
-    object ShadePolicy {
-      case object DontShade extends ShadePolicy
-      case object Shade extends ShadePolicy
-      case class ShadeToPackage(pkg: String) extends ShadePolicy
-      case object ShadeNoRename extends ShadePolicy
-      case object Extract extends ShadePolicy
-    }
-
-    sealed trait ShadedArtifact
-    object ShadedArtifact {
-      case class Managed(id: ModuleID) extends ShadedArtifact
-      case class Unmanaged(location: File) extends ShadedArtifact
-
-      def apply(cpEntry: Attributed[File]) = cpEntry.get(moduleID.key) match {
-        case Some(moduleId) => Managed(moduleId)
-        case None => Unmanaged(cpEntry.data.getCanonicalFile)
-      }
     }
 
     implicit class CurseForgeResolverExtension(resolver: Resolver.type) {
@@ -266,21 +245,12 @@ object BaseForgePlugin extends AutoPlugin {
     case _ => sys.error(s"Could not parse mapping channel name: $s")
   }
 
-  private def getCrossVersion(artifact: Attributed[File]) =
-    artifact.get(moduleID.key).map(id => id.crossVersion)
-
   // Initialize Forge scopes
-  private lazy val depsFromJar: Seq[Def.Setting[_]] = Seq(
-    forge.minecraftProvidedLibraries := forge.minecraftAllProvidedLibraries.value
-      .filter(x => !forge.excludedOrganizations.value.contains(x.organization)),
-    allDependencies ++= forge.minecraftProvidedLibraries.value,
-  )
-
-  private def simpleIvyCtx(module: TaskKey[ModuleID]): Seq[Def.Setting[_]] =
+  private lazy val simpleIvyCtx: Seq[Def.Setting[_]] =
     Classpaths.configSettings ++ Classpaths.ivyBaseSettings ++ Seq(
       allDependencies := Seq(),
       moduleSettings :=
-        ModuleDescriptorConfiguration(module.value, ModuleInfo(module.value.name))
+        ModuleDescriptorConfiguration(forge.resolutionModuleId.value, ModuleInfo(forge.resolutionModuleId.value.name))
           .withValidate(ivyValidate.value)
           .withScalaModuleInfo(scalaModuleInfo.value)
           .withDependencies(allDependencies.value.toVector)
@@ -303,21 +273,10 @@ object BaseForgePlugin extends AutoPlugin {
       artifactPath := forge.cacheRoot.value / "artifact_path_keep_empty",
       classDirectory := forge.cacheRoot.value / "class_directory_keep_empty",
     )
-  private def forgeIvyCtx: Seq[Def.Setting[_]] =
-    simpleIvyCtx(forge.resolutionModuleId) ++ depsFromJar ++ Seq(
-      forge.resolutionModuleId := "net.minecraftforge" % "forge" % forge.version.value,
-      allDependencies ++= lwjgl.libraries.value,
-      scalaModuleInfo := {
-        val scalaVersion = forge.scalaVersion.value
-        scalaModuleInfo.value.map(_.withScalaFullVersion(scalaVersion)
-                                   .withScalaBinaryVersion(CrossVersion.binaryScalaVersion(scalaVersion)))
-      }
-    )
-  private lazy val projectSettingsCommon =
-    depsFromJar ++ inConfig(Forge)(forgeIvyCtx)
+  private lazy val initScopes = inConfig(Forge)(simpleIvyCtx)
 
-  override val requires = LWJGLPlugin
-  override lazy val projectSettings = projectSettingsCommon ++ Seq(
+  override val requires = LWJGLNativesPlugin
+  override lazy val projectSettings = initScopes ++ Seq(
     forge.fullVersion  := forge.mcVersion.value + "-" + forge.version.value,
 
     forge.cacheRoot    := target.value / "sbt-forge-cache",
@@ -334,7 +293,6 @@ object BaseForgePlugin extends AutoPlugin {
     forge.cleanLtCache := false,
     forge.cleanRunDir  := false,
 
-    publishMavenStyle := true,
     crossPaths := false,
 
     // Download needed files
@@ -371,15 +329,30 @@ object BaseForgePlugin extends AutoPlugin {
     extractTask(forge.dependenciesJson, forge.userdevArchive, "dev.json"            , "userdev_dev.json"     ),
     extractTask(forge.forgeAtFile     , forge.userdevArchive, "merged_at.cfg"       , "userdev_merged_at.cfg"),
 
-    // Set up dependency resolution
+    // Set up dependency resolution for Forge
     resolvers += Resolver.MinecraftForgeRepository,
     resolvers += Resolver.MinecraftRepository,
-
     resolvers in Forge := Seq(Resolver.MinecraftForgeRepository, Resolver.MinecraftRepository),
 
-    forge.minecraftAllProvidedLibraries :=
+    ivyConfigurations :=
+      overrideConfigs(Forge, Extract, Shade, ForgeCompile)(ivyConfigurations.value),
+
+    forge.resolutionModuleId := "net.minecraftforge" % "forge" % forge.version.value,
+    scalaModuleInfo in Forge := {
+      val scalaVersion = forge.scalaVersion.value
+      scalaModuleInfo.value.map(_.withScalaFullVersion(scalaVersion)
+                                 .withScalaBinaryVersion(CrossVersion.binaryScalaVersion(scalaVersion)))
+    },
+
+    forge.minecraftProvidedLibraries :=
       MinecraftLauncher.getDependencies(forge.launcherDir.value, forge.mcVersion.value,
                                         Seq(forge.dependenciesJson.value), streams.value.log),
+    allDependencies ++= {
+      val excluded = forge.excludedOrganizations.value
+      forge.minecraftProvidedLibraries.value.filter(x => !excluded.contains(x.organization)).map(_ % "forge")
+    },
+    allDependencies ++= lwjglNativeDeps.value.map(_ % "forge"),
+    allDependencies in Forge ++= forge.minecraftProvidedLibraries.value,
 
     scalaVersion := forge.scalaVersion.value,
 
@@ -531,7 +504,7 @@ object BaseForgePlugin extends AutoPlugin {
       val outFile = forge.forgeDir.value / s"forgeBin-at-${forge.fullVersion.value}-${forge.mappings.value}.jar"
 
       trackDependencies(cacheDir, accessTransformers.toSet + forgeBinary) {
-        log.info("Applying user access transformers")
+        log.info("Applying user access transformers...")
         val jar = JarData.load(forgeBinary)
         val atJar = AccessTransformer.parse(accessTransformers : _*).transformJar(jar)
         atJar.write(outFile)
@@ -546,7 +519,9 @@ object BaseForgePlugin extends AutoPlugin {
       at.remap(Mapping.readCachedMapping(forge.revMappingCache.value)).writeTo(target)
       Seq(target)
     }.taskValue,
-    unmanagedClasspath in Compile += forge.atForgeBinary.value,
+    unmanagedClasspath in Compile +=
+      Attributed(forge.atForgeBinary.value)
+                (AttributeMap.empty.put(moduleID.key, forge.resolutionModuleId.value % Forge)),
 
     // Add dependency extraction related information to mod .jar
     packageOptions in (Compile, packageBin) += Package.ManifestAttributes(
@@ -556,44 +531,29 @@ object BaseForgePlugin extends AutoPlugin {
 
     // Shade dependencies into the mod .jar
     forge.depShadePrefix := s"moe.lymia.forge.depshade.${UUID.randomUUID().toString.toLowerCase.replace("-", "")}",
-    forge.shadePolicy := Map(),
-    forge.shadePolicy ++= (dependencyClasspath in Compile).value.map(x => ShadedArtifact(x) -> (
-      if (x.get(moduleID.key).map(_.organization).contains("org.scala-lang")) ShadePolicy.Shade
-      else getCrossVersion(x) match {
-        case Some(_: Disabled) | None => ShadePolicy.Extract
-        case x => ShadePolicy.Shade
+    forge.autoExtractDeps := true,
+    forge.shadeScalaLibs := CrossVersion.binaryScalaVersion(scalaVersion.value) !=
+                            CrossVersion.binaryScalaVersion(forge.scalaVersion.value),
+    allDependencies := {
+      val (allDeps, scalaOrg, scalaHome, scalaVersion) =
+        (allDependencies.value, scalaOrganization.value, Keys.scalaHome.value, Keys.scalaVersion.value)
+      if (!forge.shadeScalaLibs.value) allDeps else {
+        if (scalaHome.isDefined) sys.error("shadeScalaLibs current does not work with scalaHome.")
+        allDeps :+ (scalaOrg % "scala-library" % scalaVersion % "shade")
       }
-    )).toMap,
-    forge.shadePolicy ++=
-      (fullClasspath in Forge).value.map(x => ShadedArtifact(x) -> ShadePolicy.DontShade).toMap,
-    forge.shadePolicy += ShadedArtifact.Unmanaged(forge.atForgeBinary.value) -> ShadePolicy.DontShade,
+    },
+    forge.shadeInfo := new ShadeInfo(allDependencies.value, update.value, (dependencyClasspath in Compile).value,
+                                     forge.depShadePrefix.value, forge.autoExtractDeps.value),
     forge.shadedDepJar := {
       val log = streams.value.log
 
       val cacheDir = forge.depDir.value / "shaded-dep-jar"
-      val modJar = (packageBin in Compile).value
-      val outFile = crossTarget.value / appendToFilename(modJar.getName, "_deps")
+      val classpaths = forge.shadeInfo.value.deobfClasspaths
+      val outFile = crossTarget.value / appendToFilename((packageBin in Compile).value.getName, "_deps")
 
-      val policy = forge.shadePolicy.value
-      val classpath = (dependencyClasspath in Compile).value
-      // TODO: Also shade dependencies that depend on shaded dependencies
-      val shadedDeps = {
-        val shadePrefix = forge.depShadePrefix.value.replace('.', '/')
-        classpath.flatMap(x => policy.get(ShadedArtifact(x)).flatMap {
-          case ShadePolicy.Shade => Some(x.data -> Some(shadePrefix))
-          case ShadePolicy.ShadeToPackage(pkg) => Some(x.data -> Some(pkg))
-          case ShadePolicy.ShadeNoRename => Some(x.data -> None)
-          case _ => None
-        })
-      }
-      val extractedDeps = classpath.flatMap(x => policy.get(ShadedArtifact(x)).flatMap {
-        case ShadePolicy.Extract => Some((x.data, x.get(moduleID.key)))
-        case _ => None
-      })
-
-      trackDependencies(cacheDir, shadedDeps.map(_._1).toSet) {
+      trackDependencies(cacheDir, classpaths.trackFiles, extra = classpaths.trackExtra) {
         log.info(s"Shading mod dependencies to $outFile...")
-        val shadedJar = DepShader.generateDepsJar(shadedDeps, extractedDeps, log)
+        val shadedJar = DepShader.generateDepsJar(classpaths, log)
         shadedJar.write(outFile)
         outFile
       }
@@ -609,7 +569,8 @@ object BaseForgePlugin extends AutoPlugin {
 
     // Launcher bindings
     forge.modClasspath := Seq(),
-    forge.modClasspath += (forge.shadedJar in Compile).value,
+    forge.modClasspath += forge.shadedJar.value,
+    forge.modClasspath ++= forge.shadeInfo.value.deobfClasspaths.modClasspath,
 
     forge.login  := MinecraftLauncher.login (forge.launcherDir.value, streams.value.log),
     forge.logout := MinecraftLauncher.logout(forge.launcherDir.value, streams.value.log),
@@ -623,7 +584,6 @@ object BaseForgePlugin extends AutoPlugin {
       )).toVector)
       .withWorkingDirectory(forge.runDir.value),
     forge.runClient := {
-      lwjgl.copyNatives.value // Discard value, use this just to... well, copy the natives
       createDirectories(forge.runDir.value)
       MinecraftLauncher.prepareModsDirectory(forge.runDir.value, forge.modClasspath.value, streams.value.log)
 
@@ -664,17 +624,16 @@ object ForgePlugin_1_12 extends AutoPlugin {
   import BaseForgePlugin.autoImport._
 
   override def projectSettings = Seq(
-    forge.mcBaseVersion   := "1.12",
-    forge.mcVersion       := "1.12.2",
-    forge.version         := "14.23.4.2759",
-    forge.mappings        := "stable_39",
+    forge.mcBaseVersion := "1.12",
+    forge.mcVersion     := "1.12.2",
+    forge.version       := "14.23.4.2759",
+    forge.mappings      := "stable_39",
 
-    forge.scalaVersion    := "2.11.1",
-    lwjgl.version         := "2.9.4-nightly-20150209",
+    forge.scalaVersion  := "2.11.1",
+    lwjglVersion        := "2.9.4-nightly-20150209",
 
     forge.excludedOrganizations := Set("org.scala-lang", "org.scala-lang.modules", "org.scala-lang.plugins",
-                                       "com.typesafe.akka", "org.lwjgl.lwjgl"),
-    forge.excludedOrganizations in Forge := Set("org.lwjgl.lwjgl"),
+                                       "com.typesafe.akka"),
     forge.serverDepPrefixes := Seq(
       "org/bouncycastle/", "org/apache/", "com/google/", "com/mojang/authlib/", "com/mojang/util/",
       "gnu/trove/", "io/netty/", "javax/annotation/", "argo/", "it/"

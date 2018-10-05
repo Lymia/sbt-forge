@@ -3,10 +3,11 @@ package moe.lymia.forge
 import java.nio.charset.StandardCharsets
 import java.nio.file._
 
+import com.google.common.collect.MapMaker
 import org.apache.commons.io.{FileUtils, FilenameUtils, IOUtils}
 import sbt._
 
-import scala.collection.concurrent
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 object Utils {
@@ -21,6 +22,8 @@ object Utils {
 
   def max[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].max(a, b)
   def min[T : Ordering](a: T, b: T) = implicitly[Ordering[T]].min(a, b)
+
+  def cleanModuleID(id: ModuleID) = id.organization % id.name % id.revision
 
   // String manipulation helpers
   val InnerClassNameRegex = """(.*)$([^$.]*)""".r.anchored
@@ -76,19 +79,35 @@ object Utils {
                              Paths.get(source.getCanonicalPath))
 
   // Caching helpers
-  private def cached(cacheDirectory: File, inStyle: FileInfo.Style, outStyle: FileInfo.Style)
+  private val lockSets = new MapMaker().weakValues().makeMap[File, Object]().asScala
+
+  private def cached(cacheDirectory: File, extra: String, inStyle: FileInfo.Style, outStyle: FileInfo.Style)
                     (fn: Set[File] => Set[File]) =
-    FileFunction.cached(cacheDirectory, inStyle, outStyle)(fn)
+    lockSets.getOrElseUpdate(cacheDirectory.getCanonicalFile, new Object) synchronized {
+      val extraFile = cacheDirectory / "extra"
+      val flagFile = cacheDirectory / "extra_changed_flag"
+      IO.write(extraFile, extra)
+      deps: Set[File] => {
+        FileFunction.cached(cacheDirectory / "extra_cache", FileInfo.hash, outStyle) { _ =>
+          // We only touch the flag file when extra changes hash. So any inStyle works in the actual call.
+          IO.write(flagFile, Hash.toHex(Hash(extra)))
+          Set(flagFile)
+        }(Set(extraFile))
+        FileFunction.cached(cacheDirectory / "main_cache", inStyle, outStyle)(x => fn(x - flagFile))(deps + flagFile)
+      }
+    }
   def trackDependencies(cacheDirectory: File, deps: Set[File],
                         inStyle: FileInfo.Style = FilesInfo.lastModified,
-                        outStyle: FileInfo.Style = FilesInfo.exists)(fn: => File) = {
-    val cache = cached(cacheDirectory, inStyle, outStyle) { _ => Set(fn) }
+                        outStyle: FileInfo.Style = FilesInfo.exists,
+                        extra: String = "")(fn: => File) = {
+    val cache = cached(cacheDirectory, extra, inStyle, outStyle) { _ => Set(fn) }
     cache(deps).head
   }
   def cachedTransform(cacheDirectory: File, input: File, output: File,
                       inStyle: FileInfo.Style = FilesInfo.lastModified,
-                      outStyle: FileInfo.Style = FilesInfo.exists)(fn: (File, File) => Unit) = {
-    val cache = cached(cacheDirectory, inStyle, outStyle){ in =>
+                      outStyle: FileInfo.Style = FilesInfo.exists,
+                      extra: String = "")(fn: (File, File) => Unit) = {
+    val cache = cached(cacheDirectory, extra, inStyle, outStyle){ in =>
       fn(in.head, output)
       Set(output)
     }
@@ -102,10 +121,8 @@ object Utils {
       IO.copyFile(in, out))
   }
 
-  // There will be so few locks that this should be OK to leak. (We only use this for downloads currently)
-  private val LockSets = new concurrent.TrieMap[File, Object]
   def cachedOperation[T](outFile: File)(task: File => T) =
-    LockSets.getOrElseUpdate(outFile.getCanonicalFile, new Object) synchronized {
+    lockSets.getOrElseUpdate(outFile.getCanonicalFile, new Object) synchronized {
       if(!outFile.exists) try {
         createParentDirectory(outFile)
         task(outFile)
