@@ -146,11 +146,23 @@ final class ShadeInfo(explicitModules: Seq[ModuleID], updateReport: UpdateReport
 object DepShader {
   private implicit val shadeMappingFormat = Json.format[ShadeMapping]
 
+  private val ScalaSignature = "Lscala/reflect/ScalaSignature;"
+
   private val ContainedDeps = new Attributes.Name("ContainedDeps")
   private val MavenArtifact = new Attributes.Name("Maven-Artifact")
   private val Timestamp     = new Attributes.Name("Timestamp")
 
   private val ShadeMappingRes = "META-INF/sbt-forge/shade-mapping.json"
+
+  private def removeScalaLinkage(jar: JarData) = {
+    for (cn <- jar.allClasses) {
+      if (cn.visibleAnnotations   != null) cn.visibleAnnotations  .removeIf(_.desc == ScalaSignature)
+      if (cn.invisibleAnnotations != null) cn.invisibleAnnotations.removeIf(_.desc == ScalaSignature)
+    }
+    for (toRemove <- jar.resources.keySet.filter(_.endsWith(".tasty")).toSeq)
+      jar.resources.remove(toRemove)
+    jar
+  }
 
   private def addExtractedDep(target: JarData, file: File, moduleId: Option[ModuleID]) = {
     val prefix = findUnusedFile(s"META-INF/libraries/${file.getName}",
@@ -178,7 +190,7 @@ object DepShader {
     target.manifest.getMainAttributes.put(ContainedDeps, deps)
   }
   def generateDepsJar(classpaths: ShadeClasspaths, log: Logger = null) = {
-    val shadeJars = classpaths.shade.map(x => JarData.load(x.data).stripSignatures)
+    val shadeJars = classpaths.shade.map(x => removeScalaLinkage(JarData.load(x.data).stripSignatures))
     val shadeMapping = ShadeMapping((
       for (jar <- shadeJars; name <- jar.classes.keySet) yield name -> s"${classpaths.shadePrefix}/$name").toMap)
     val merged = JarData.mergeAll(shadeJars, log)
@@ -189,8 +201,8 @@ object DepShader {
     mapped.resources.put(ShadeMappingRes, Json.toJson(shadeMapping).toString().getBytes(StandardCharsets.UTF_8))
     mapped
   }
-  def addDepsToJar(target: File, dep: File) = {
-    val targetJar = JarData.load(target)
+  def addDepsToJar(target: File, dep: File, stripLinkage: Boolean) = {
+    val targetJar = if (stripLinkage) removeScalaLinkage(JarData.load(target)) else JarData.load(target)
     val depJar = JarData.load(dep)
     val data = depJar.resources.getOrElse(ShadeMappingRes, sys.error(s"$ShadeMappingRes not found in shaded deps."))
     val shadeMapping = Json.parse(data).as[ShadeMapping]

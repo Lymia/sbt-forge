@@ -513,7 +513,7 @@ object BaseForgePlugin extends AutoPlugin {
       val modJar = (packageBin in Compile).value
       val outFile = crossTarget.value / appendToFilename(modJar.getName, "_shaded")
       log.info(s"Writing shaded mod jar to $outFile")
-      DepShader.addDepsToJar(modJar, forgeDevShadedDepJar.value).write(outFile)
+      DepShader.addDepsToJar(modJar, forgeDevShadedDepJar.value, shadeScalaLibs.value).write(outFile)
       outFile
     },
 
