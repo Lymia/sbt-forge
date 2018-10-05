@@ -23,10 +23,10 @@ private final case class ShadeMapping(classMapping: Map[String, String]) extends
 
 private sealed trait ShadeAction
 private object ShadeAction {
-  case object DoNothing extends ShadeAction
+  case object NotShaded extends ShadeAction
   case object Extract extends ShadeAction
   case object Shade extends ShadeAction
-  case object IsForgeDep extends ShadeAction
+  case object Provided extends ShadeAction
 }
 
 private object ShadeFlag extends Enumeration {
@@ -34,11 +34,11 @@ private object ShadeFlag extends Enumeration {
   type ShadeFlags = ValueSet
   val ShadeFlags = ValueSet
 
-  val Forge, Extract, Shade, Optional, Provided = Value
-  val UsedShadeFlags = Set(Forge, Extract, Shade, Optional)
+  val Forge, Extract, Shade, ShadeDeps, Optional, Provided = Value
+  val UsedShadeFlags = Set(Forge, Extract, Shade, ShadeDeps, Optional)
 
   private val ForgeConfigurations = Set("forge", "optional", "provided")
-  private val FlagConfigurations = Set("shade", "extract")
+  private val FlagConfigurations = Set("shade", "shadeDeps", "extract")
   private def parseConfigurationString(s: String) =
     s.split(";").map(_.split("->")).collect {
       case Array(x) if FlagConfigurations.contains(x) || ForgeConfigurations.contains(x) => x
@@ -56,6 +56,7 @@ private object ShadeFlag extends Enumeration {
         case "forge" => Forge
         case "extract" => Extract
         case "shade" => Shade
+        case "shadeDeps" => ShadeDeps
         case "optional" => Optional
         case "provided" => Provided
       }.toSeq: _*)
@@ -87,25 +88,32 @@ final class ShadeInfo(explicitModules: Seq[ModuleID], updateReport: UpdateReport
 
     val chosenActions = new mutable.HashMap[ModuleID, ShadeAction]
     def addAction(id: ModuleID, action: ShadeAction) =
-      (action, chosenActions.getOrElse(cleanModuleID(id), ShadeAction.DoNothing)) match {
-        case (_, ShadeAction.DoNothing) |
+      (action, chosenActions.getOrElse(cleanModuleID(id), ShadeAction.NotShaded)) match {
+        case (_, ShadeAction.NotShaded) |
              (ShadeAction.Shade, ShadeAction.Extract) |
-             (ShadeAction.IsForgeDep, _) => chosenActions.put(cleanModuleID(id), action)
+             (ShadeAction.Provided, _) => chosenActions.put(cleanModuleID(id), action)
         case _ =>
       }
 
     for (rawModule <- explicitModules) {
       val module = cleanModuleID(rawModule)
       val configurations = ShadeFlags.forModule(rawModule)
-      if (configurations.contains(ShadeFlag.Forge)) addAction(module, ShadeAction.IsForgeDep)
+      if (configurations.contains(ShadeFlag.Forge) ||
+          configurations.contains(ShadeFlag.Provided)) addAction(module, ShadeAction.Provided)
       else {
+        // Mark sure anything on the explicit classpath or is a dependency of one
+        addAction(module, ShadeAction.NotShaded)
+        for (depList <- deps.get(module); dep <- depList) addAction(dep, ShadeAction.NotShaded)
+
+        // Calculate any further actions that have to be taken with a dependency
         if (configurations.contains(ShadeFlag.Extract)) {
           addAction(module, ShadeAction.Extract)
           for (depList <- deps.get(module); dep <- depList) addAction(dep, ShadeAction.Extract)
         }
-        if (configurations.contains(ShadeFlag.Shade)) {
+        if (configurations.contains(ShadeFlag.Shade) || configurations.contains(ShadeFlag.ShadeDeps)) {
           addAction(module, ShadeAction.Shade)
-          for (depList <- deps.get(module); dep <- depList) addAction(dep, ShadeAction.Extract)
+          for (depList <- deps.get(module); dep <- depList)
+            addAction(dep, if (configurations.contains(ShadeFlag.ShadeDeps)) ShadeAction.Shade else ShadeAction.Extract)
           for (depList <- reverseDeps.get(module); dep <- depList) addAction(dep, ShadeAction.Shade)
         }
       }
@@ -114,7 +122,7 @@ final class ShadeInfo(explicitModules: Seq[ModuleID], updateReport: UpdateReport
     classpath.map(x =>
       x -> x.get(moduleID.key)
         .flatMap(x => chosenActions.get(cleanModuleID(x)))
-        .getOrElse(ShadeAction.DoNothing)
+        .getOrElse(ShadeAction.Provided)
     )
   }
 
@@ -122,15 +130,17 @@ final class ShadeInfo(explicitModules: Seq[ModuleID], updateReport: UpdateReport
     val rawClasspath = annotatedClasspath.map(x => x.copy(_2 = action.applyOrElse(x._2, (y: ShadeAction) => y)))
     def extractClasspath(target: ShadeAction) = rawClasspath.filter(_._2 == target).map(_._1)
     ShadeClasspaths(
-      extractClasspath(ShadeAction.DoNothing),
+      extractClasspath(ShadeAction.NotShaded),
       extractClasspath(ShadeAction.Shade),
       extractClasspath(ShadeAction.Extract),
       shadePrefix
     )
   }
 
-  lazy val deobfClasspaths = calculateAction { case ShadeAction.Extract => ShadeAction.DoNothing }
+  lazy val deobfClasspaths = calculateAction { case ShadeAction.Extract => ShadeAction.NotShaded }
   lazy val obfClasspaths = calculateAction { case x => x }
+
+  override def toString = s"ShadeInfo($deobfClasspaths, $obfClasspaths)"
 }
 
 object DepShader {

@@ -29,6 +29,7 @@ object BaseForgePlugin extends AutoPlugin {
     // Configurations
     val Extract = config("extract").hide describedAs "Dependencies that should be extracted from the mod jar."
     val Shade = config("shade").hide describedAs "Dependencies that should be shaded into the mod jar."
+    val ShadeDeps = config("shadeDeps").hide describedAs "Dependencies that should be shaded into the mod jar transitively."
 
     // User setting keys
     val forgeVersion    = settingKey[String]("The version of Minecraft Forge to build against.")
@@ -59,7 +60,7 @@ object BaseForgePlugin extends AutoPlugin {
     object BaseForgePluginInternalKeys {
       // Internal configurations
       val Forge = config("forge").hide describedAs "Dependencies of Forge itself."
-      val ForgeCompile = config("compile") extend (Forge, Extract, Shade, Optional)
+      val ForgeCompile = config("compile") extend (Forge, Extract, Shade, ShadeDeps, Optional)
 
       // Configuration for the current Minecraft version. Should be set by the ForgePlugin_1_X object.
       val forgeMcMappingVersion = settingKey[String]("The Minecraft version number used to find the MCP mapping.")
@@ -240,8 +241,7 @@ object BaseForgePlugin extends AutoPlugin {
     cleanMinecraftHome := false,
 
     shadePrefix        := s"moe.lymia.shadeddeps.${Hash.toHex(Hash.apply(s"${organization.value}:${name.value}:${version.value}"))}",
-    shadeScalaLibs     := CrossVersion.binaryScalaVersion(forgeScalaVersion.value) !=
-                          CrossVersion.binaryScalaVersion(scalaVersion.value),
+    shadeScalaLibs     := CrossVersion.binaryScalaVersion(forgeScalaVersion.value) != scalaBinaryVersion.value,
     autoExtractDeps    := true,
     accessTransformers := Seq(),
 
@@ -285,7 +285,7 @@ object BaseForgePlugin extends AutoPlugin {
     resolvers in Forge := Seq(Resolver.MinecraftForgeRepository, Resolver.MinecraftRepository),
 
     ivyConfigurations :=
-      overrideConfigs(Forge, Extract, Shade, ForgeCompile)(ivyConfigurations.value),
+      overrideConfigs(Forge, Extract, Shade, ShadeDeps, ForgeCompile)(ivyConfigurations.value),
 
     forgeResolutionModuleId := "net.minecraftforge" % "forge" % forgeVersion.value,
     scalaModuleInfo in Forge := {
@@ -485,7 +485,10 @@ object BaseForgePlugin extends AutoPlugin {
         if (scalaHome.isDefined) sys.error("shadeScalaLibs current does not work with scalaHome.")
         val target = scalaOrg % "scala-library" % scalaVersion
         val scalaRemoved = allDeps.filter(x => cleanModuleID(x) != target)
-        scalaRemoved :+ (if (shadeScalaLibs.value) target % Shade else target % Forge)
+        scalaRemoved.map(x =>
+          if (x.configurations.exists(_.contains("scala-tool"))) x.withConfigurations(Some("scala-tool;provided"))
+          else x
+        ) :+ (if (shadeScalaLibs.value) target % "scala-tool;shadeDeps" else target % "scala-tool;forge")
      }
       if (autoExtractDeps.value) scalaSet.map(x => if (x.configurations.isEmpty) x % Extract else x) else scalaSet
     },
