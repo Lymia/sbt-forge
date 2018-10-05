@@ -1,8 +1,8 @@
 sbtPlugin := true
 
-name := "sbt-forge"
-
 organization := "moe.lymia"
+
+name := "sbt-forge"
 
 version := "0.1.0-SNAPSHOT"
 

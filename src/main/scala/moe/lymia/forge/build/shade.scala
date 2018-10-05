@@ -69,11 +69,9 @@ final case class ShadeClasspaths(modClasspath: Classpath, shade: Classpath, extr
   lazy val trackFiles = (modClasspath ++ shade ++ extract).map(_.data).toSet
   lazy val trackExtra = Seq(modClasspath, shade, extract).map(_.map(_.data).sorted.mkString(" ")).mkString("\n")
 }
-final class ShadeInfo(explicitModules: Seq[ModuleID], updateReport: UpdateReport, classpath: Classpath,
-                      shadePrefix: String, autoExtractDeps: Boolean) {
+final class ShadeInfo(explicitModules: Seq[ModuleID], updateReport: UpdateReport,
+                      classpath: Classpath, shadePrefix: String) {
   private val annotatedClasspath = {
-    val default = if (autoExtractDeps) ShadeFlags(ShadeFlag.Extract) else ShadeFlags(ShadeFlag.Optional)
-
     val reverseDeps = {
       val compile = updateReport.configurations.find(_.configuration.name == "compile")
         .getOrElse(sys.error("compile configuration not found in update report"))
@@ -98,8 +96,7 @@ final class ShadeInfo(explicitModules: Seq[ModuleID], updateReport: UpdateReport
 
     for (rawModule <- explicitModules) {
       val module = cleanModuleID(rawModule)
-      val rawConfigurations = ShadeFlags.forModule(rawModule)
-      val configurations = if (rawConfigurations.union(UsedShadeFlags).isEmpty) default else rawConfigurations
+      val configurations = ShadeFlags.forModule(rawModule)
       if (configurations.contains(ShadeFlag.Forge)) addAction(module, ShadeAction.IsForgeDep)
       else {
         if (configurations.contains(ShadeFlag.Extract)) {

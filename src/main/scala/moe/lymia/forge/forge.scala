@@ -18,22 +18,19 @@ import sbt.{Def, _}
 // TODO: Remove mcBaseVersion, and instead load the MCP versions.json file.
 // TODO: Put all the default URLs, etc into its own file.
 // TODO: Reobf and deobf of mods.
-// TODO: Work on mod dependencies system.
 // TODO: Work on artifact publishing.
-// TODO: Do something so that dependencies of a sbt-forge mod doesn't try to pull unnecessary dependencies.
 // TODO: Update to 1.x best practices
 // TODO: Add Tags to our tasks.
 // TODO: Make sure the plugin works well in multi-project builds.
-// TODO: Are there any dependencies that we must *not* attempt to deobf?
 // TODO: Implement extraction of dependencies from the classpath.
-// TODO: Consider integrating the recently split ForgeGradle 3.0 libraries?
+// TODO: Consider integrating the recently extracted ForgeGradle 3.0 libraries?
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
     // Configurations
-    val Forge = config("forge") describedAs "Dependencies of Forge itself."
-    val Extract = config("extract") describedAs "Dependencies that should be extracted from the mod jar."
-    val Shade = config("shade") describedAs "Dependencies that should be shaded into the mod jar."
+    val Forge = config("forge").hide describedAs "Dependencies of Forge itself."
+    val Extract = config("extract").hide describedAs "Dependencies that should be extracted from the mod jar."
+    val Shade = config("shade").hide describedAs "Dependencies that should be shaded into the mod jar."
     val ForgeCompile = config("compile") extend (Forge, Extract, Shade, Optional)
 
     // Task/setting/input keys
@@ -537,13 +534,17 @@ object BaseForgePlugin extends AutoPlugin {
     allDependencies := {
       val (allDeps, scalaOrg, scalaHome, scalaVersion) =
         (allDependencies.value, scalaOrganization.value, Keys.scalaHome.value, Keys.scalaVersion.value)
-      if (!forge.shadeScalaLibs.value) allDeps else {
+      val autoExtractDeps = forge.autoExtractDeps.value
+      val scalaSet = if (!forge.shadeScalaLibs.value && autoScalaLibrary.value) allDeps else {
         if (scalaHome.isDefined) sys.error("shadeScalaLibs current does not work with scalaHome.")
-        allDeps :+ (scalaOrg % "scala-library" % scalaVersion % "shade")
-      }
+        val target = scalaOrg % "scala-library" % scalaVersion
+        val scalaRemoved = allDeps.filter(x => cleanModuleID(x) != target)
+        scalaRemoved :+ (target % Shade)
+     }
+      if (autoExtractDeps) scalaSet.map(x => if (x.configurations.isEmpty) x % Extract else x) else scalaSet
     },
-    forge.shadeInfo := new ShadeInfo(allDependencies.value, update.value, (dependencyClasspath in Compile).value,
-                                     forge.depShadePrefix.value, forge.autoExtractDeps.value),
+    forge.shadeInfo := new ShadeInfo(allDependencies.value, update.value,
+                                     (dependencyClasspath in Compile).value, forge.depShadePrefix.value),
     forge.shadedDepJar := {
       val log = streams.value.log
 
