@@ -6,12 +6,14 @@ import sbt.plugins.JvmPlugin
 
 object LWJGLNativesPlugin extends AutoPlugin {
   object autoImport {
-    val lwjglVersion = settingKey[String]("The version of LWJGL to use.")
-    val lwjglNativeDeps = settingKey[Seq[ModuleID]]("The LWJGL native dependencies.")
-    val lwjglNativesDir = settingKey[File]("This is where lwjgl natives will be copied")
-    val lwjglNatives = taskKey[File]("Copy lwjgl's natives into lwjglNativesDir")
+    object LWJGLNativesInternalKeys {
+      val lwjglVersion    = settingKey[String]("The version of LWJGL to use.")
+      val lwjglNativeDeps = settingKey[Seq[ModuleID]]("The LWJGL native dependencies.")
+      val lwjglNativesDir = settingKey[File]("This is where lwjgl natives will be copied")
+      val lwjglNatives    = taskKey[File]("Copy lwjgl's natives into lwjglNativesDir")
+    }
   }
-  import autoImport._
+  import autoImport.LWJGLNativesInternalKeys._
 
   private def findModules(dep: ModuleID, classpath: Classpath) =
     classpath.filter(x => x.get(moduleID.key).fold(false)(x => Utils.cleanModuleID(x) == dep))

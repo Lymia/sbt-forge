@@ -168,7 +168,7 @@ object DepShader {
     target.manifest.getMainAttributes.put(ContainedDeps, deps)
   }
   def generateDepsJar(classpaths: ShadeClasspaths, log: Logger = null) = {
-    val shadeJars = classpaths.shade.map(x => JarData.load(x.data))
+    val shadeJars = classpaths.shade.map(x => JarData.load(x.data).stripSignatures)
     val shadeMapping = ShadeMapping((
       for (jar <- shadeJars; name <- jar.classes.keySet) yield name -> s"${classpaths.shadePrefix}/$name").toMap)
     val merged = JarData.mergeAll(shadeJars, log)
