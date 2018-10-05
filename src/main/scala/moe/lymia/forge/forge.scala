@@ -22,6 +22,7 @@ import sbt.{Def, _}
 // TODO: Consider integrating the recently extracted ForgeGradle 3.0 libraries?
 // TODO: Apply the SRG/EXC/etc files found in the userdev archive.
 // TODO: Consider sbt 0.x support.
+// TODO: Figure out builds for multiple Minecraft versions (use multi-version SBT plugins as a template?)
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -45,9 +46,9 @@ object BaseForgePlugin extends AutoPlugin {
     val autoExtractDeps = settingKey[Boolean]("Whether to extract dependencies by default.")
 
     // User task keys
-    val minecraftClasspath = taskKey[Seq[ModuleID]]("Libraries expected to be provided from Minecraft or Forge.")
-    val accessTransformers = taskKey[Seq[File]]("List of access transformers to be applied to the Forge binary")
-    val mcForkOptions      = taskKey[ForkOptions]("Fork options for running Minecraft")
+    val minecraftClasspath   = taskKey[Seq[ModuleID]]("Libraries expected to be provided from Minecraft or Forge.")
+    val accessTransformers   = taskKey[Seq[File]]("List of access transformers to be applied to the Forge binary")
+    val minecraftForkOptions = taskKey[ForkOptions]("Fork options for running Minecraft")
 
     // Run Minecraft
     val login        = inputKey[Unit]("Logs you into a Minecraft account")
@@ -289,7 +290,8 @@ object BaseForgePlugin extends AutoPlugin {
     forgeResolutionModuleId := "net.minecraftforge" % "forge" % forgeVersion.value,
     scalaModuleInfo in Forge := {
       val scalaVersion = forgeScalaVersion.value
-      scalaModuleInfo.value.map(_.withScalaFullVersion(scalaVersion)
+      scalaModuleInfo.value.map(_.withScalaOrganization("org.scala-lang")
+                                 .withScalaFullVersion(scalaVersion)
                                  .withScalaBinaryVersion(CrossVersion.binaryScalaVersion(scalaVersion)))
     },
 
@@ -520,7 +522,7 @@ object BaseForgePlugin extends AutoPlugin {
     login  := MinecraftLauncher.login (forgeLauncherDir.value, streams.value.log),
     logout := MinecraftLauncher.logout(forgeLauncherDir.value, streams.value.log),
 
-    mcForkOptions := ForkOptions()
+    minecraftForkOptions := ForkOptions()
       .withConnectInput(true)
       .withOutputStrategy(Some(StdoutOutput))
       .withRunJVMOptions((javaOptions.value ++ Seq(
@@ -532,7 +534,7 @@ object BaseForgePlugin extends AutoPlugin {
       createDirectories(minecraftHome.value)
       MinecraftLauncher.prepareModsDirectory(minecraftHome.value, forgeDevModClasspath.value, streams.value.log)
 
-      val runner = new ForkRun(mcForkOptions.value)
+      val runner = new ForkRun(minecraftForkOptions.value)
       val forgeArgs = (Json.parse(IO.read(forgeDepsJson.value)) \ "minecraftArguments").as[String].split(" ")
       val launcherArgs = MinecraftLauncher.prepareClientLaunch(minecraftHome.value, forgeLauncherDir.value,
                                                                forgeMcVersion.value, streams.value.log)
@@ -547,7 +549,7 @@ object BaseForgePlugin extends AutoPlugin {
       createDirectories(minecraftHome.value)
       MinecraftLauncher.prepareModsDirectory(minecraftHome.value, forgeDevModClasspath.value, streams.value.log)
 
-      val runner = new ForkRun(mcForkOptions.value)
+      val runner = new ForkRun(minecraftForkOptions.value)
       runner.run(
         "net.minecraftforge.fml.relauncher.ServerLaunchWrapper",
         (fullClasspath in Forge).value.map(_.data) :+ forgeMcpBinary.value,
