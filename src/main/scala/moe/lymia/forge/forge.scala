@@ -481,11 +481,11 @@ object BaseForgePlugin extends AutoPlugin {
     allDependencies := {
       val (allDeps, scalaOrg, scalaHome, scalaVersion) =
         (allDependencies.value, scalaOrganization.value, Keys.scalaHome.value, Keys.scalaVersion.value)
-      val scalaSet = if (!shadeScalaLibs.value && autoScalaLibrary.value) allDeps else {
+      val scalaSet = if (!autoScalaLibrary.value) allDeps else {
         if (scalaHome.isDefined) sys.error("shadeScalaLibs current does not work with scalaHome.")
         val target = scalaOrg % "scala-library" % scalaVersion
         val scalaRemoved = allDeps.filter(x => cleanModuleID(x) != target)
-        scalaRemoved :+ (target % Shade)
+        scalaRemoved :+ (if (shadeScalaLibs.value) target % Shade else target % Forge)
      }
       if (autoExtractDeps.value) scalaSet.map(x => if (x.configurations.isEmpty) x % Extract else x) else scalaSet
     },
