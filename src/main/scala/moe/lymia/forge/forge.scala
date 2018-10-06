@@ -23,6 +23,7 @@ import sbt.{Def, _}
 // TODO: Apply the SRG/EXC/etc files found in the userdev archive.
 // TODO: Consider sbt 0.x support.
 // TODO: Figure out builds for multiple Minecraft versions (use multi-version SBT plugins as a template?)
+// TODO: Basic shrinking support.
 
 object BaseForgePlugin extends AutoPlugin {
   object autoImport {
@@ -158,8 +159,8 @@ object BaseForgePlugin extends AutoPlugin {
       val cacheDir = forgeDepDir.value / s"patch-jar_${forgeVersion.value}_${outputName.replace('.', '-')}"
       val excludedPrefixes = forgeServerDepPrefixes.value
       cachedTransform(cacheDir, inputTask.value, forgeBuildDir.value / outputName) { (input, outFile) =>
-        val patchSet = BinPatch.readPatchSet(binpatches, patchSection)
-        BinPatch.patchJar(input, outFile, patchSet, excludedPrefixes, log)
+        val patchSet = PatchSet.load(binpatches, patchSection)
+        patchSet.patchJar(input, outFile, excludedPrefixes, log)
       }
     }
 
@@ -229,7 +230,7 @@ object BaseForgePlugin extends AutoPlugin {
     forgeFullVersion   := forgeMcVersion.value + "-" + forgeVersion.value,
     forgeBuildCache    := target.value / "sbt-forge-build-cache",
     forgeDepDir        := forgeBuildCache.value / "dep-tracking",
-    forgeBuildDir      := forgeBuildCache.value / "minecraft-forge" / forgeMcVersion.value,
+    forgeBuildDir      := forgeBuildCache.value / "minecraft-forge" / forgeFullVersion.value,
 
     forgeDownloadCache := target.value / "sbt-forge-downloads",
     forgeArtifactDir   := forgeDownloadCache.value / "artifacts",
@@ -316,7 +317,7 @@ object BaseForgePlugin extends AutoPlugin {
       val cacheDir = forgeDepDir.value / s"merge-jar_${forgeVersion.value}"
       val outFile = forgeBuildDir.value / "minecraft_merged.jar"
       trackDependencies(cacheDir, Set(patchedClientJar, patchedServerJar)) {
-        log.info("Merging client and server binaries to "+outFile)
+        log.info(s"Merging client and server binaries to $outFile")
         Merger.merge(patchedClientJar, patchedServerJar, log).write(outFile)
         outFile
       }

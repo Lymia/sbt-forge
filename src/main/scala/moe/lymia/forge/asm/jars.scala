@@ -152,7 +152,8 @@ object JarData {
         jarData.classes.put(name, ClassData.Bytes(name, data))
       } else jarData.resources.put(entry.getName, data)
     }
-    jarData.manifest = jin.getManifest
+    val jarManifest = jin.getManifest
+    if (jarManifest != null) jarData.manifest = jarManifest
     jarData
   }
   def load(in: File): JarData = {

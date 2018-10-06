@@ -203,8 +203,9 @@ object JarRemapper {
     log.info("Mapping classes...")
     val mapper = new ResolvingMapper(searcher, newMapping)
     (mapping, targetJar.mapWithVisitor(cv => new ClassRemapper(cv, mapper) {
-      // TODO: Figure out if there exist Scala-specific bootstrap methods we must care about.
+      // TODO: Properly map inner class names.
       override def createMethodRemapper(mv: MethodVisitor): MethodVisitor = new MethodRemapper(mv, remapper) {
+          // TODO: Figure out if there exist Scala-specific bootstrap methods we must care about.
           override def visitInvokeDynamicInsn(name: String, desc: String, bsm: Handle, bsmArgs: Object*): Unit = {
             log.debug(s"invokedynamic instruction found: [$name, $desc, $bsm, $bsmArgs]")
             bsm match {
