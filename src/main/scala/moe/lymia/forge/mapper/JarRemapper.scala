@@ -203,7 +203,16 @@ object JarRemapper {
     log.info("Mapping classes...")
     val mapper = new ResolvingMapper(searcher, newMapping)
     (mapping, targetJar.mapWithVisitor(cv => new ClassRemapper(cv, mapper) {
-      // TODO: Properly map inner class names.
+      override def visitInnerClass(name: String, outerName: String, innerName: String, access: Int): Unit = {
+        val mappedName = remapper.mapType(name)
+        val mappedOuterName = remapper.mapType(outerName)
+        val mappedInnerName =
+          if (outerName != null && s"$outerName$$$innerName" == name && mappedName.startsWith(s"$mappedOuterName$$"))
+            mappedName.substring(mappedOuterName.length + 1)
+          else innerName
+        super.visitInnerClass(mappedName, mappedOuterName, mappedInnerName, access)
+      }
+
       override def createMethodRemapper(mv: MethodVisitor): MethodVisitor = new MethodRemapper(mv, remapper) {
           // TODO: Figure out if there exist Scala-specific bootstrap methods we must care about.
           override def visitInvokeDynamicInsn(name: String, desc: String, bsm: Handle, bsmArgs: Object*): Unit = {
